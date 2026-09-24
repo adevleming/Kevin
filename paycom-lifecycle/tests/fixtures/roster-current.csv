@@ -1,0 +1,11 @@
+Employee_Code,Legal_Firstname,Legal_Lastname,Nickname,Work_Email,Department_Desc,Position,Supervisor_Primary,Supervisor_Primary_Email,Location_Desc,Employee_Status,Hire_Date,Termination_Date
+E1001,Alice,Anders,,alice.anders@iac.aero,Sales,Account Manager,Frank Fisher,frank.fisher@iac.aero,Spokane,A,03/14/2022,
+E1002,Robert,Baker,Bob,,Production,Coatings Technician,Gina Gomez,gina.gomez@iac.aero,Spokane,A,06/01/2021,
+E1003,Carol,Chen,,carol.chen@iac.aero,Finance,Senior Accountant,Frank Fisher,frank.fisher@iac.aero,Spokane,A,01/10/2020,
+E1004,Daniel,Dorsey,Dan,dan.dorsey@iac.aero,Engineering,Process Engineer,Frank Fisher,frank.fisher@iac.aero,Spokane,T,08/19/2019,09/21/2026
+E1006,Frank,Fisher,,,IT,IT Manager,,,Spokane,A,11/11/2018,
+E1007,Gina,Gomez,,gina.gomez@iac.aero,Human Resources,HR Manager,,,Spokane,A,04/04/2017,
+E1008,Henry,Hill,Hank,,Production,Painter,Gina Gomez,gina.gomez@iac.aero,Spokane,A,09/21/2026,03/01/2026
+E1010,José,Núñez,,,Sales,Inside Sales Representative,Alice Anders,alice.anders@iac.aero,Spokane,A,09/28/2026,
+E1011,Alice,Anders,,,Engineering,Design Engineer,Frank Fisher,frank.fisher@iac.aero,Spokane,A,09/28/2026,
+E1012,Pat,Price,,,Production,Coatings Technician,Gina Gomez,gina.gomez@iac.aero,Spokane,A,09/28/2026,
