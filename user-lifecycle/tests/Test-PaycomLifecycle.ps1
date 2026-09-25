@@ -8,18 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $fx = Join-Path $PSScriptRoot 'fixtures'
 Import-Module (Join-Path $root 'PaycomLifecycle.psm1') -Force
 
-$script:passed = 0; $script:failed = 0
-function It {
-    param([string]$Name, [scriptblock]$Test)
-    try { & $Test; $script:passed++; Write-Host "  [pass] $Name" -ForegroundColor Green }
-    catch { $script:failed++; Write-Host "  [FAIL] $Name`n         $($_.Exception.Message)" -ForegroundColor Red }
-}
-function Assert-Equal {
-    param($Expected, $Actual, [string]$Because = '')
-    $e = ($Expected | ForEach-Object { "$_" }) -join ','; $a = ($Actual | ForEach-Object { "$_" }) -join ','
-    if ($e -ne $a) { throw "Expected [$e] but got [$a]. $Because" }
-}
-function Assert-True { param($Condition, [string]$Because = '') if (-not $Condition) { throw "Expected true. $Because" } }
+. (Join-Path $PSScriptRoot 'TestHarness.ps1')
 
 $config = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'test-config.psd1')
 $asOf = [datetime]'2026-09-24'
@@ -162,7 +151,8 @@ New-Item -ItemType Directory $drop | Out-Null
 $runner = Join-Path $root 'Invoke-PaycomLifecycle.ps1'
 $cfgPath = Join-Path $PSScriptRoot 'test-config.psd1'
 $dirJson = Join-Path $fx 'directory-users.json'
-$run = { & $runner -ConfigPath $cfgPath -DirectoryJsonPath $dirJson -NoEmail -AsOf $asOf -WarningAction SilentlyContinue }
+$noRequests = Join-Path $fx 'requests-none.json'
+$run = { & $runner -ConfigPath $cfgPath -DirectoryJsonPath $dirJson -RequestsJsonPath $noRequests -NoEmail -AsOf $asOf -WarningAction SilentlyContinue }
 try {
     It 'first run sets the baseline' {
         Copy-Item (Join-Path $fx 'roster-previous.csv') (Join-Path $drop 'IT Current Employees 2026-09-17.csv')
@@ -206,6 +196,4 @@ finally {
     Remove-Item $state, $drop -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host ''
-Write-Host "$script:passed passed, $script:failed failed" -ForegroundColor $(if ($script:failed) { 'Red' } else { 'Green' })
-if ($script:failed) { exit 1 }
+Complete-Tests

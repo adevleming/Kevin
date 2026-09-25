@@ -28,6 +28,8 @@ param(
     [string]$RosterPath,
     # Use a JSON dump of Entra users instead of calling Graph (testing / offline review).
     [string]$DirectoryJsonPath,
+    # Use a JSON dump of the lifecycle request list instead of reading SharePoint.
+    [string]$RequestsJsonPath,
     # Allow changes in Entra ID / AD. Each action type must also be enabled in config.
     [switch]$Apply,
     # Write the report and tickets to disk only; send nothing.
@@ -39,6 +41,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'PaycomLifecycle.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'LifecycleRequests.psm1') -Force
 
 $config = Import-PowerShellDataFile -Path $ConfigPath
 $configDir = Split-Path -Parent (Resolve-Path $ConfigPath)
@@ -51,7 +54,8 @@ foreach ($dir in $snapshotDir, $reportDir, $inboxDir) { if (-not (Test-Path $dir
 $stateFile = Join-Path $statePath 'state.json'
 $state = if (Test-Path $stateFile) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { [pscustomobject]@{ LastRosterHash = $null; LastRunAt = $null } }
 
-$needGraph = (-not $DirectoryJsonPath) -or (-not $NoEmail) -or $Apply -or (-not $RosterPath -and $config.Input.Source -eq 'SharePoint')
+$needGraph = (-not $DirectoryJsonPath) -or (-not $NoEmail) -or $Apply -or (-not $RosterPath -and $config.Input.Source -eq 'SharePoint') -or
+    (-not $RequestsJsonPath -and $config.Requests -and $config.Requests.ListId)
 if ($needGraph) { Connect-LifecycleGraph -Graph $config.Graph }
 
 function Send-Or-Save {
@@ -113,6 +117,21 @@ else {
     Get-LifecycleDirectoryUsers -IncludeSignInActivity:([bool]$config.Graph.IncludeSignInActivity)
 }
 $recon = Compare-RosterToDirectory -Roster $current -DirectoryUsers $directory -Scope $config.Scope
+
+# Cross-check against the request form: which Paycom hires/terminations nobody filed a request for.
+$requestCheck = $null
+$requestItems = if ($RequestsJsonPath) { @(Get-Content $RequestsJsonPath -Raw | ConvertFrom-Json) }
+elseif ($config.Requests -and $config.Requests.ListId) {
+    $personCache = @{}
+    $resolver = { param($id) Resolve-LifecyclePersonEmail -SiteId $config.Requests.SiteId -LookupId $id -Cache $personCache }
+    @(Get-LifecycleRequestItems -Config $config)
+}
+else { $null }
+if ($null -ne $requestItems) {
+    $resolverArg = if ($RequestsJsonPath) { $null } else { $resolver }
+    $requests = @($requestItems | ForEach-Object { ConvertFrom-LifecycleListItem -Item $_ -Config $config -ResolvePerson $resolverArg })
+    $requestCheck = Compare-RosterToRequests -Diff $diff -Requests $requests -Index $recon.Index
+}
 #endregion
 
 #region 4. Plan (and optionally apply) actions
@@ -176,6 +195,7 @@ $result = [pscustomobject]@{
     Reconciliation = $recon
     Safety         = $safety
     Plan           = [pscustomobject]@{ Offboard = $offboard; Onboard = $onboard }
+    RequestCheck   = $requestCheck
     Tickets        = @()
 }
 

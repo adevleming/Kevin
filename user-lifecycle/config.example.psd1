@@ -20,6 +20,60 @@
         IncludeSignInActivity = $true       # needs AuditLog.Read.All + Entra ID P1
     }
 
+    # ---- Form-driven requests (primary process) ------------------------------------
+    Requests      = @{
+        SiteId            = 'iacaero.sharepoint.com,00000000-0000-0000-0000-000000000000,00000000-0000-0000-0000-000000000000'
+        ListId            = ''                  # printed by New-LifecycleRequestList.ps1
+        ListUrl           = 'https://iacaero.sharepoint.com/sites/HR/Lists/Employee%20Lifecycle%20Requests'
+        SiteTimeZone      = 'Pacific Standard Time'   # the SharePoint site's regional setting
+        DefaultTimeZone   = 'Pacific Standard Time'   # for sites not listed under Sites
+        TerminationCutoff = '18:00'             # access ends at this time (site local) on the last day
+        # Only members of these groups may submit (checked again by the script).
+        AuthorizedGroupIds = @(
+            # 'Hiring Managers' group object ID, HR group object ID
+        )
+        RequireApproval   = $true               # the flow records ApprovedBy; immediate terminations skip approval
+        # Accounts allowed to edit a request after it's submitted: HR approvers and the account
+        # the flow's SharePoint connection runs as. Anything else edited last goes to IT review.
+        TrustedEditors    = @(
+            # 'shelbae@iac.aero', 'hr-backup@iac.aero', 'flows@iac.aero'
+        )
+        MaxOffboardPerRun = 5                   # more than this in one run are held for a person to check
+        EquipmentChoices  = @('Laptop', 'Desktop', 'Monitor(s)', 'Docking station', 'Phone', 'Tablet', 'Badge / keys')
+    }
+
+    Sites         = @(
+        @{ Name = 'Spokane'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Spokane'
+            GroupIds = @(); ContactGroups = @() }
+        @{ Name = 'Amarillo (AMA)'; TimeZone = 'Central Standard Time'; OfficeLocation = 'Amarillo (AMA)'
+            GroupIds = @()                       # e.g. AMA staff group, AMA shared mailbox access group
+            ContactGroups = @() }                # distribution lists contacts join, e.g. 'ama-floor@iac.aero'
+    )
+
+    Departments   = @('Operations', 'Quality', 'QC', 'Supply Chain', 'EHS/Facilities', 'Records', 'HR', 'Finance',
+        'Sales', 'Engineering', 'IT', 'Administration')
+
+    # "Computer access" on the form. Contact = $true means no account, just an address-book contact.
+    AccessTypes   = @(
+        @{ Name = 'Full user'; Description = 'Laptop/desktop user: email, Teams, Office apps'
+            GroupIds = @() }                     # licence group, e.g. 'License - M365 Business Standard'
+        @{ Name = 'Basic user'; Description = 'Email and Teams on web/mobile only'
+            GroupIds = @() }                     # e.g. 'License - M365 Business Basic'
+        @{ Name = 'Contact only'; Description = 'No account (e.g. painters): address-book contact only'
+            Contact = $true }
+    )
+
+    Exchange      = @{
+        # Needed for contacts and mailbox conversion. App needs Exchange.ManageAsApp + an Exchange role.
+        AppId                 = '00000000-0000-0000-0000-000000000000'
+        CertificateThumbprint = ''
+        Organization          = 'iacaero.onmicrosoft.com'
+        UseManagedIdentity    = $false
+    }
+
+    # ---- Weekly Paycom audit (backstop) ---------------------------------------------
+    # Paycom's push report email only links to the Report Center, so someone downloads the
+    # CSV and saves it to the drop folder. The audit flags hires/terms nobody filed a form for.
     Input         = @{
         ReportName      = 'IT Current Employees'
         # 'Folder'     - newest *.csv in Path (local path, UNC share, or a synced library)
@@ -77,9 +131,14 @@
         KeepGroupIds           = @()
         AddToGroupId           = ''       # e.g. an "Offboarded Users" group targeted by a CA block policy
         DisabledUsersOU        = ''       # Hybrid only, e.g. 'OU=Disabled Users,DC=iac,DC=local'
+        ConvertMailboxToShared = $true    # form terminations: convert mailbox, give access to the named delegate
+        ProtectedUpns          = @(       # never offboarded automatically
+            # 'ceo@iac.aero', 'breakglass@iac.aero'
+        )
     }
 
     Onboarding    = @{
+        # Enabled applies to the Paycom audit only. Leave it off: the form creates accounts.
         Enabled         = $false
         Domain          = 'iac.aero'
         UsageLocation   = 'US'
@@ -110,6 +169,9 @@
 
     Tickets       = @{
         SendTo               = 'helpdesk@iac.aero'   # PLACEHOLDER: the address Desk365 turns into tickets
+        # When form requests are available, the Paycom audit only raises tickets for hires and
+        # terminations that have no matching request (the form flow already raised the others).
+        OnlyForGaps          = $true
         CreateChangeTickets  = $true
         ChangeTicketFields   = @('Department', 'JobTitle', 'Manager')
         OnboardingChecklist  = @(

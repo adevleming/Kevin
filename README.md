@@ -2,4 +2,4 @@
 
 IT automation for International Aerospace Coatings.
 
-- [`paycom-lifecycle/`](paycom-lifecycle/README.md): weekly Paycom roster → Entra ID joiner/leaver/mover automation, reconciliation report and Desk365 tickets.
+- [`user-lifecycle/`](user-lifecycle/README.md): new hire, termination and role-change automation. A request form in Teams with HR approval drives account and contact creation and offboarding in Entra ID and Exchange Online; a weekly Paycom audit catches anything missed.

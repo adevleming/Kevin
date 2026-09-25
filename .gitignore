@@ -1,6 +1,6 @@
-paycom-lifecycle/config.psd1
-paycom-lifecycle/state/
-paycom-lifecycle/tests/.test-state/
-paycom-lifecycle/tests/.test-drop/
+user-lifecycle/config.psd1
+user-lifecycle/state/
+user-lifecycle/tests/.test-state/
+user-lifecycle/tests/.test-drop/
 *.csv
-!paycom-lifecycle/tests/fixtures/*.csv
+!user-lifecycle/tests/fixtures/*.csv

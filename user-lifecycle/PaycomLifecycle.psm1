@@ -12,6 +12,19 @@ Set-StrictMode -Version Latest
 
 #region Helpers
 
+function Get-ConfigValue {
+    # Safe lookup of an optional setting, e.g. Get-ConfigValue $Config 'Offboarding.ProtectedUpns'.
+    # Strict mode would otherwise throw when a key is left out of config.psd1.
+    param($Object, [Parameter(Mandatory)][string]$Path)
+    $v = $Object
+    foreach ($part in $Path.Split('.')) {
+        if ($null -eq $v) { return $null }
+        if ($v -is [System.Collections.IDictionary]) { $v = if ($v.Contains($part)) { $v[$part] } else { $null } }
+        else { $prop = $v.PSObject.Properties[$part]; $v = if ($prop) { $prop.Value } else { $null } }
+    }
+    return $v
+}
+
 function Get-AsciiName {
     # "José O'Brien-Núñez" -> "JoseOBrien-Nunez". Keeps letters and hyphens only.
     param([string]$Value)
@@ -223,12 +236,12 @@ function Test-DirectoryUserInScope {
     if ($User.PSObject.Properties['userType'] -and $User.userType -and $User.userType -ne 'Member') { return $false }
     $upn = [string]$User.userPrincipalName
     if ($upn -match '#EXT#') { return $false }
-    if ($Scope.Domains -and (@($Scope.Domains) -notcontains (Get-EmailDomain $upn))) { return $false }
-    if ($Scope.ExcludeUpns -and (@($Scope.ExcludeUpns | ForEach-Object { $_.ToLowerInvariant() }) -contains $upn.ToLowerInvariant())) { return $false }
-    foreach ($pattern in @($Scope.ExcludePatterns)) {
+    if ((Get-ConfigValue $Scope 'Domains') -and (@((Get-ConfigValue $Scope 'Domains')) -notcontains (Get-EmailDomain $upn))) { return $false }
+    if ((Get-ConfigValue $Scope 'ExcludeUpns') -and (@((Get-ConfigValue $Scope 'ExcludeUpns') | ForEach-Object { $_.ToLowerInvariant() }) -contains $upn.ToLowerInvariant())) { return $false }
+    foreach ($pattern in @((Get-ConfigValue $Scope 'ExcludePatterns'))) {
         if ($pattern -and ($upn -match $pattern -or [string]$User.displayName -match $pattern)) { return $false }
     }
-    if ($Scope.RequireLicense -and -not @($User.assignedLicenses).Count) { return $false }
+    if ((Get-ConfigValue $Scope 'RequireLicense') -and -not @($User.assignedLicenses).Count) { return $false }
     return $true
 }
 
@@ -391,19 +404,19 @@ function Test-RosterSafety {
     param([object[]]$Previous, [object[]]$Current, $Diff, [hashtable]$Safety)
     $problems = New-Object Collections.Generic.List[string]
     $curActive = @($Current | Where-Object IsActive).Count
-    if ($Safety.MinRosterRows -and $curActive -lt $Safety.MinRosterRows) {
-        $problems.Add("Roster has only $curActive active employees (minimum $($Safety.MinRosterRows)).")
+    if ((Get-ConfigValue $Safety 'MinRosterRows') -and $curActive -lt (Get-ConfigValue $Safety 'MinRosterRows')) {
+        $problems.Add("Roster has only $curActive active employees (minimum $((Get-ConfigValue $Safety 'MinRosterRows'))).")
     }
     if ($Previous) {
         $prevActive = @($Previous | Where-Object IsActive).Count
-        if ($prevActive -gt 0 -and $Safety.MaxShrinkPercent) {
+        if ($prevActive -gt 0 -and (Get-ConfigValue $Safety 'MaxShrinkPercent')) {
             $shrink = [math]::Round((($prevActive - $curActive) / $prevActive) * 100, 1)
-            if ($shrink -gt $Safety.MaxShrinkPercent) {
-                $problems.Add("Active headcount dropped $shrink% ($prevActive -> $curActive), above the $($Safety.MaxShrinkPercent)% limit.")
+            if ($shrink -gt (Get-ConfigValue $Safety 'MaxShrinkPercent')) {
+                $problems.Add("Active headcount dropped $shrink% ($prevActive -> $curActive), above the $((Get-ConfigValue $Safety 'MaxShrinkPercent'))% limit.")
             }
         }
-        if ($Safety.MaxTerminations -and @($Diff.Terminations).Count -gt $Safety.MaxTerminations) {
-            $problems.Add("$(@($Diff.Terminations).Count) terminations detected, above the limit of $($Safety.MaxTerminations).")
+        if ((Get-ConfigValue $Safety 'MaxTerminations') -and @($Diff.Terminations).Count -gt (Get-ConfigValue $Safety 'MaxTerminations')) {
+            $problems.Add("$(@($Diff.Terminations).Count) terminations detected, above the limit of $((Get-ConfigValue $Safety 'MaxTerminations')).")
         }
     }
     [pscustomobject]@{ IsSafe = ($problems.Count -eq 0); Problems = $problems.ToArray() }
@@ -439,10 +452,11 @@ function New-LifecycleReport {
     $lic = { param($u) @($u.assignedLicenses).Count }
     $lastSeen = {
         param($u)
-        if ($u.PSObject.Properties['signInActivity'] -and $u.signInActivity -and $u.signInActivity.lastSignInDateTime) {
-            ([datetime]$u.signInActivity.lastSignInDateTime).ToString('yyyy-MM-dd')
-        }
-        else { '' }
+        # lastSignInDateTime also counts failed attempts, so prefer the last successful sign-in.
+        $activity = Get-ConfigValue $u 'signInActivity'
+        $when = Get-ConfigValue $activity 'lastSuccessfulSignInDateTime'
+        if (-not $when) { $when = Get-ConfigValue $activity 'lastSignInDateTime' }
+        if ($when) { ([datetime]$when).ToString('yyyy-MM-dd') } else { '' }
     }
 
     $hires = foreach ($e in $d.NewHires) {
@@ -507,6 +521,17 @@ function New-LifecycleReport {
     }
     [void]$sb.Append('</tr></table>')
 
+    $check = if ($Result.PSObject.Properties['RequestCheck']) { $Result.RequestCheck } else { $null }
+    if ($check) {
+        $gapHires = foreach ($e in $check.HiresWithoutRequest) {
+            [pscustomobject]@{ 'Employee #' = $e.EmployeeId; Name = $e.DisplayName; Department = $e.Department; Title = $e.JobTitle; Manager = $e.Manager; 'Start date' = $e.HireDate }
+        }
+        $gapTerms = foreach ($t in $check.TerminationsWithoutRequest) {
+            [pscustomobject]@{ 'Employee #' = $t.Employee.EmployeeId; Name = $t.Employee.DisplayName; Department = $t.Employee.Department; Manager = $t.Employee.Manager; 'Term date' = $t.TermDate }
+        }
+        [void]$sb.Append("<h2 $h2>Hired in Paycom with no new-hire request</h2><p style='color:#555;margin:0 0 6px'>Process gap: ask the manager to submit the form so IT can set them up.</p>" + (New-HtmlTable $gapHires @('Employee #', 'Name', 'Department', 'Title', 'Manager', 'Start date')))
+        [void]$sb.Append("<h2 $h2>Terminated in Paycom with no termination request</h2><p style='color:#555;margin:0 0 6px'>Process gap: this person left without IT being told. Check their account below.</p>" + (New-HtmlTable $gapTerms @('Employee #', 'Name', 'Department', 'Manager', 'Term date')))
+    }
     [void]$sb.Append("<h2 $h2>New hires</h2>" + (New-HtmlTable $hires @('Employee #', 'Name', 'Department', 'Title', 'Manager', 'Start date', 'Account')))
     [void]$sb.Append("<h2 $h2>Terminations</h2>" + (New-HtmlTable $terms @('Employee #', 'Name', 'Department', 'Term date', 'Reason', 'Account', 'Action')))
     [void]$sb.Append("<h2 $h2>Job / department / manager changes</h2>" + (New-HtmlTable $changes @('Employee #', 'Name', 'Changes')))
@@ -532,7 +557,13 @@ function New-LifecycleTickets {
         (($pairs | ForEach-Object { "<tr><td style='padding:2px 12px 2px 0;color:#555'>$(ConvertTo-HtmlText $_[0])</td><td>$(ConvertTo-HtmlText $_[1])</td></tr>" }) -join '') + '</table>'
     }
 
+    # With the request form in place, only raise tickets for what nobody filed a request for.
+    $check = if ($Result.PSObject.Properties['RequestCheck']) { $Result.RequestCheck } else { $null }
+    $skipHires = @(); $skipTerms = @()
+    if ($check -and (Get-ConfigValue $TicketConfig 'OnlyForGaps')) { $skipHires = @($check.CoveredHireIds); $skipTerms = @($check.CoveredTerminationIds) }
+
     foreach ($e in $Result.Diff.NewHires) {
+        if ($skipHires -contains $e.EmployeeId) { continue }
         $plan = $Result.Plan.Onboard | Where-Object { $_.Employee.EmployeeId -eq $e.EmployeeId } | Select-Object -First 1
         $m = $Result.Reconciliation.Matches | Where-Object { $_.Employee.EmployeeId -eq $e.EmployeeId } | Select-Object -First 1
         $acct = if ($m) { "$($m.User.userPrincipalName) (already exists)" } elseif ($plan) { "$($plan.Upn) - $($plan.Status)" } else { 'Not auto-created (not eligible by config). Create manually if needed.' }
@@ -540,11 +571,12 @@ function New-LifecycleTickets {
         $body = "<p>Paycom shows a new hire. Please complete onboarding before the start date.</p>" +
             (& $kv @(@('Name', $e.DisplayName), @('Employee #', $e.EmployeeId), @('Start date', $start), @('Department', $e.Department),
                     @('Title', $e.JobTitle), @('Manager', $e.Manager), @('Location', $e.Location), @('Account', $acct))) +
-            "<p><b>Checklist</b></p><ul>$(& $li $TicketConfig.OnboardingChecklist)</ul>"
+            "<p><b>Checklist</b></p><ul>$(& $li (Get-ConfigValue $TicketConfig 'OnboardingChecklist'))</ul>"
         $list.Add([pscustomobject]@{ Type = 'Onboarding'; Subject = "[Onboarding] $($e.DisplayName) - starts $start"; Body = $body })
     }
 
     foreach ($t in $Result.Diff.Terminations) {
+        if ($skipTerms -contains $t.Employee.EmployeeId) { continue }
         $e = $t.Employee
         $plan = $Result.Plan.Offboard | Where-Object { $_.Employee.EmployeeId -eq $e.EmployeeId } | Select-Object -First 1
         $m = Find-DirectoryMatch $e $Result.Reconciliation.Index
@@ -554,13 +586,13 @@ function New-LifecycleTickets {
             (& $kv @(@('Name', $e.DisplayName), @('Employee #', $e.EmployeeId), @('Term date', $term), @('Reason', $t.Reason),
                     @('Department', $e.Department), @('Manager', $e.Manager), @('Account', $(if ($m) { $m.User.userPrincipalName } else { 'No account found' })),
                     @('Account status', $(if ($plan) { $plan.Status } elseif ($m -and -not $m.User.accountEnabled) { 'Already disabled' } elseif ($m) { 'STILL ENABLED - disable now' } else { '-' })))) +
-            $done + "<p><b>Checklist</b></p><ul>$(& $li $TicketConfig.OffboardingChecklist)</ul>"
+            $done + "<p><b>Checklist</b></p><ul>$(& $li (Get-ConfigValue $TicketConfig 'OffboardingChecklist'))</ul>"
         $list.Add([pscustomobject]@{ Type = 'Offboarding'; Subject = "[Offboarding] $($e.DisplayName) - $term"; Body = $body })
     }
 
-    if ($TicketConfig.CreateChangeTickets) {
+    if ((Get-ConfigValue $TicketConfig 'CreateChangeTickets')) {
         foreach ($c in $Result.Diff.Changes) {
-            if (-not @($c.Changes | Where-Object { @($TicketConfig.ChangeTicketFields) -contains $_.Field }).Count) { continue }
+            if (-not @($c.Changes | Where-Object { @((Get-ConfigValue $TicketConfig 'ChangeTicketFields')) -contains $_.Field }).Count) { continue }
             $rows = $c.Changes | ForEach-Object { @($_.Field, "'$($_.Old)' -> '$($_.New)'") }
             $body = "<p>Paycom shows a role change. Review access (groups, shared mailboxes, app roles) for the new role and update the Entra profile.</p>" +
                 (& $kv (@(, @('Name', $c.Employee.DisplayName)) + @(, @('Employee #', $c.Employee.EmployeeId)) + $rows))
@@ -579,6 +611,11 @@ $script:GraphInvoker = $null
 # Used in @odata.id references. graph.microsoft.us for GCC High / DoD tenants.
 $script:GraphResourceBase = 'https://graph.microsoft.com'
 
+function Get-LifecycleGraphBase {
+    # Base URL for @odata.id references in the current cloud.
+    return $script:GraphResourceBase
+}
+
 function Set-LifecycleGraphInvoker {
     # Lets tests (or a different transport) replace the Graph call.
     param([scriptblock]$Invoker)
@@ -590,20 +627,22 @@ function Invoke-LifecycleGraph {
         [Parameter(Mandatory)][string]$Method,
         [Parameter(Mandatory)][string]$Uri,
         $Body,
-        [string]$OutputFilePath
+        [string]$OutputFilePath,
+        [hashtable]$Headers
     )
     if ($script:GraphInvoker) { return & $script:GraphInvoker $Method $Uri $Body $OutputFilePath }
     $params = @{ Method = $Method; Uri = $Uri; ErrorAction = 'Stop' }
+    if ($Headers) { $params.Headers = $Headers }
     if ($null -ne $Body) { $params.Body = ($Body | ConvertTo-Json -Depth 10); $params.ContentType = 'application/json' }
     if ($OutputFilePath) { $params.OutputFilePath = $OutputFilePath }
     return Invoke-MgGraphRequest @params
 }
 
 function Invoke-LifecycleGraphPaged {
-    param([Parameter(Mandatory)][string]$Uri)
+    param([Parameter(Mandatory)][string]$Uri, [hashtable]$Headers)
     $next = $Uri
     while ($next) {
-        $page = Invoke-LifecycleGraph -Method GET -Uri $next
+        $page = Invoke-LifecycleGraph -Method GET -Uri $next -Headers $Headers
         foreach ($item in @($page.value)) { $item }
         $next = if ($page.ContainsKey('@odata.nextLink')) { $page['@odata.nextLink'] } else { $null }
     }
@@ -625,14 +664,15 @@ function ConvertTo-LifecycleObject {
 
 function Connect-LifecycleGraph {
     param([Parameter(Mandatory)][hashtable]$Graph)
+    if ($script:GraphInvoker) { return }   # a test / replacement transport is in use
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     $params = @{ TenantId = $Graph.TenantId; ClientId = $Graph.ClientId; NoWelcome = $true }
-    if ($Graph.Environment) {
-        $params.Environment = $Graph.Environment
-        if ($Graph.Environment -match '^USGov') { $script:GraphResourceBase = 'https://graph.microsoft.us' }
+    if ((Get-ConfigValue $Graph 'Environment')) {
+        $params.Environment = (Get-ConfigValue $Graph 'Environment')
+        if ((Get-ConfigValue $Graph 'Environment') -match '^USGov') { $script:GraphResourceBase = 'https://graph.microsoft.us' }
     }
-    if ($Graph.CertificateThumbprint) { $params.CertificateThumbprint = $Graph.CertificateThumbprint }
-    elseif ($Graph.UseManagedIdentity) { $params = @{ Identity = $true; NoWelcome = $true } }
+    if ((Get-ConfigValue $Graph 'CertificateThumbprint')) { $params.CertificateThumbprint = (Get-ConfigValue $Graph 'CertificateThumbprint') }
+    elseif ((Get-ConfigValue $Graph 'UseManagedIdentity')) { $params = @{ Identity = $true; NoWelcome = $true } }
     else { throw 'Graph config needs CertificateThumbprint (app-only) or UseManagedIdentity = $true.' }
     Connect-MgGraph @params | Out-Null
 }
@@ -640,8 +680,10 @@ function Connect-LifecycleGraph {
 function Get-LifecycleDirectoryUsers {
     param([switch]$IncludeSignInActivity)
     $select = 'id,displayName,givenName,surname,userPrincipalName,mail,employeeId,accountEnabled,userType,assignedLicenses,department,jobTitle,onPremisesSyncEnabled,createdDateTime'
-    if ($IncludeSignInActivity) { $select += ',signInActivity' }
-    @(Invoke-LifecycleGraphPaged -Uri "/v1.0/users?`$select=$select&`$top=999" | ForEach-Object { ConvertTo-LifecycleObject $_ })
+    $top = 999
+    # With signInActivity selected, Graph caps pages at 500 users.
+    if ($IncludeSignInActivity) { $select += ',signInActivity'; $top = 500 }
+    @(Invoke-LifecycleGraphPaged -Uri "/v1.0/users?`$select=$select&`$top=$top" | ForEach-Object { ConvertTo-LifecycleObject $_ })
 }
 
 function Get-SharePointRosterFile {
@@ -689,14 +731,14 @@ function Invoke-LifecycleOffboarding {
     $id = $User.id
     $stamp = (Get-Date).ToString('yyyy-MM-dd')
 
-    if ($Config.DirectoryMode -eq 'Hybrid' -and $User.onPremisesSyncEnabled) {
+    if ((Get-ConfigValue $Config 'DirectoryMode') -eq 'Hybrid' -and $User.onPremisesSyncEnabled) {
         & $step 'Disable on-prem AD account' {
             Import-Module ActiveDirectory -ErrorAction Stop
             $ad = Get-ADUser -Filter "UserPrincipalName -eq '$($User.userPrincipalName)'" -ErrorAction Stop
             if (-not $ad) { throw 'AD account not found' }
             Disable-ADAccount -Identity $ad -ErrorAction Stop
             Set-ADUser -Identity $ad -Description "Disabled by Paycom lifecycle $stamp" -ErrorAction Stop
-            if ($Config.Offboarding.DisabledUsersOU) { Move-ADObject -Identity $ad -TargetPath $Config.Offboarding.DisabledUsersOU -ErrorAction Stop }
+            if ((Get-ConfigValue $Config 'Offboarding.DisabledUsersOU')) { Move-ADObject -Identity $ad -TargetPath (Get-ConfigValue $Config 'Offboarding.DisabledUsersOU') -ErrorAction Stop }
         }
     }
     else {
@@ -704,7 +746,7 @@ function Invoke-LifecycleOffboarding {
     }
     & $step 'Revoke sign-in sessions' { Invoke-LifecycleGraph -Method POST -Uri "/v1.0/users/$id/revokeSignInSessions" | Out-Null }
 
-    if ($Config.Offboarding.RemoveGroupMemberships) {
+    if ((Get-ConfigValue $Config 'Offboarding.RemoveGroupMemberships')) {
         $groups = @()
         try {
             $groups = @(Invoke-LifecycleGraphPaged -Uri "/v1.0/users/$id/memberOf/microsoft.graph.group?`$select=id,displayName,groupTypes,onPremisesSyncEnabled,assignedLicenses" |
@@ -714,13 +756,13 @@ function Invoke-LifecycleOffboarding {
         foreach ($g in $groups) {
             # Keep licence groups (mailbox must be converted first), dynamic groups and synced groups.
             if (@($g.assignedLicenses).Count -or @($g.groupTypes) -contains 'DynamicMembership' -or $g.onPremisesSyncEnabled) { continue }
-            if (@($Config.Offboarding.KeepGroupIds) -contains $g.id) { continue }
+            if (@((Get-ConfigValue $Config 'Offboarding.KeepGroupIds')) -contains $g.id) { continue }
             & $step "Remove from group '$($g.displayName)'" { Invoke-LifecycleGraph -Method DELETE -Uri "/v1.0/groups/$($g.id)/members/$id/`$ref" | Out-Null }
         }
     }
-    if ($Config.Offboarding.AddToGroupId) {
+    if ((Get-ConfigValue $Config 'Offboarding.AddToGroupId')) {
         & $step 'Add to offboarded users group' {
-            Invoke-LifecycleGraph -Method POST -Uri "/v1.0/groups/$($Config.Offboarding.AddToGroupId)/members/`$ref" -Body @{ '@odata.id' = "$script:GraphResourceBase/v1.0/directoryObjects/$id" } | Out-Null
+            Invoke-LifecycleGraph -Method POST -Uri "/v1.0/groups/$((Get-ConfigValue $Config 'Offboarding.AddToGroupId'))/members/`$ref" -Body @{ '@odata.id' = "$script:GraphResourceBase/v1.0/directoryObjects/$id" } | Out-Null
         }
     }
     return $log.ToArray()
@@ -732,9 +774,10 @@ function Invoke-LifecycleOnboarding {
         (group-based licensing). The random password is discarded; on day one the tech
         issues a Temporary Access Pass so no password is ever emailed.
     #>
-    param([Parameter(Mandatory)]$Employee, [Parameter(Mandatory)][string]$Upn, [Parameter(Mandatory)][hashtable]$Config, $ManagerUser)
+    param([Parameter(Mandatory)]$Employee, [Parameter(Mandatory)][string]$Upn, [Parameter(Mandatory)][hashtable]$Config, $ManagerUser,
+        [string[]]$ExtraGroupIds = @())
     $log = New-Object Collections.Generic.List[string]
-    $o = $Config.Onboarding
+    $o = Get-ConfigValue $Config 'Onboarding'
     $body = @{
         accountEnabled    = $true
         displayName       = $Employee.DisplayName
@@ -742,15 +785,15 @@ function Invoke-LifecycleOnboarding {
         surname           = $Employee.LastName
         userPrincipalName = $Upn
         mailNickname      = $Upn.Split('@')[0]
-        employeeId        = $Employee.EmployeeId
-        usageLocation     = $(if ($o.UsageLocation) { $o.UsageLocation } else { 'US' })
+        usageLocation     = $(if ((Get-ConfigValue $o 'UsageLocation')) { (Get-ConfigValue $o 'UsageLocation') } else { 'US' })
         passwordProfile   = @{ forceChangePasswordNextSignIn = $true; password = (New-RandomPassword) }
     }
-    foreach ($pair in @(@('department', 'Department'), @('jobTitle', 'JobTitle'), @('officeLocation', 'Location'))) {
+    # The Paycom employee code may not exist yet for a form-driven hire; the weekly audit backfills it.
+    foreach ($pair in @(@('employeeId', 'EmployeeId'), @('department', 'Department'), @('jobTitle', 'JobTitle'), @('officeLocation', 'Location'))) {
         if ($Employee.($pair[1])) { $body[$pair[0]] = $Employee.($pair[1]) }
     }
     if ($Employee.HireDate) { $body.employeeHireDate = $Employee.HireDate.ToString('yyyy-MM-ddT00:00:00Z') }
-    if ($o.CompanyName) { $body.companyName = $o.CompanyName }
+    if ((Get-ConfigValue $o 'CompanyName')) { $body.companyName = (Get-ConfigValue $o 'CompanyName') }
 
     $created = Invoke-LifecycleGraph -Method POST -Uri '/v1.0/users' -Body $body
     $newId = $created.id
@@ -763,10 +806,10 @@ function Invoke-LifecycleOnboarding {
         }
         catch { $log.Add("FAILED: Set manager - $($_.Exception.Message)") }
     }
-    $groupIds = @($o.DefaultGroupIds)
-    if ($o.DepartmentGroups) {
-        foreach ($pattern in $o.DepartmentGroups.Keys) {
-            if ([string]$Employee.Department -match $pattern) { $groupIds += @($o.DepartmentGroups[$pattern]) }
+    $groupIds = @((Get-ConfigValue $o 'DefaultGroupIds')) + @($ExtraGroupIds)
+    if ((Get-ConfigValue $o 'DepartmentGroups')) {
+        foreach ($pattern in (Get-ConfigValue $o 'DepartmentGroups').Keys) {
+            if ([string]$Employee.Department -match $pattern) { $groupIds += @((Get-ConfigValue $o 'DepartmentGroups')[$pattern]) }
         }
     }
     foreach ($gid in ($groupIds | Where-Object { $_ } | Select-Object -Unique)) {
@@ -786,9 +829,9 @@ function Set-LifecycleEmployeeId {
 
 #endregion
 
-Export-ModuleMember -Function Get-AsciiName, Add-DirectoryUserDefaults, Get-NameKey, ConvertTo-RosterDate, Import-PaycomRoster, ConvertTo-RosterIndex,
+Export-ModuleMember -Function Get-ConfigValue, Get-AsciiName, Add-DirectoryUserDefaults, Get-NameKey, ConvertTo-RosterDate, Import-PaycomRoster, ConvertTo-RosterIndex,
     Compare-PaycomRoster, Test-DirectoryUserInScope, New-DirectoryIndex, Find-DirectoryMatch, Compare-RosterToDirectory,
     New-UpnCandidate, Test-OnboardingEligible, Test-RosterSafety, New-LifecycleReport, New-LifecycleTickets,
-    Set-LifecycleGraphInvoker, Invoke-LifecycleGraph, Invoke-LifecycleGraphPaged, ConvertTo-LifecycleObject, Connect-LifecycleGraph,
+    Set-LifecycleGraphInvoker, Get-LifecycleGraphBase, Invoke-LifecycleGraph, Invoke-LifecycleGraphPaged, ConvertTo-LifecycleObject, Connect-LifecycleGraph,
     Get-LifecycleDirectoryUsers, Get-SharePointRosterFile, Send-LifecycleMail, Invoke-LifecycleOffboarding,
     Invoke-LifecycleOnboarding, Set-LifecycleEmployeeId, New-RandomPassword
