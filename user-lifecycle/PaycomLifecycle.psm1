@@ -455,7 +455,12 @@ function New-LifecycleReport {
         # lastSignInDateTime also counts failed attempts, so prefer the last successful sign-in.
         $activity = Get-ConfigValue $u 'signInActivity'
         $when = Get-ConfigValue $activity 'lastSuccessfulSignInDateTime'
-        if (-not $when) { $when = Get-ConfigValue $activity 'lastSignInDateTime' }
+        if (-not $when) {
+            # Not recorded before Dec 2023: fall back to the later of interactive / non-interactive.
+            $dates = @('lastSignInDateTime', 'lastNonInteractiveSignInDateTime') | ForEach-Object { Get-ConfigValue $activity $_ } |
+                Where-Object { $_ } | ForEach-Object { [datetime]$_ } | Sort-Object -Descending
+            if ($dates) { $when = @($dates)[0] }
+        }
         if ($when) { ([datetime]$when).ToString('yyyy-MM-dd') } else { '' }
     }
 
@@ -722,7 +727,9 @@ function Invoke-LifecycleOffboarding {
         Licenses and the mailbox are left alone so a tech can convert the mailbox
         to shared and hand it to the manager (the ticket covers that).
     #>
-    param([Parameter(Mandatory)]$User, [Parameter(Mandatory)][hashtable]$Config)
+    param([Parameter(Mandatory)]$User, [Parameter(Mandatory)][hashtable]$Config,
+        # For a hire who never started: there's no mailbox to keep, so licence groups go too.
+        [switch]$IncludeLicenceGroups)
     $log = New-Object Collections.Generic.List[string]
     $step = {
         param([string]$Name, [scriptblock]$Action)
@@ -746,7 +753,7 @@ function Invoke-LifecycleOffboarding {
     }
     & $step 'Revoke sign-in sessions' { Invoke-LifecycleGraph -Method POST -Uri "/v1.0/users/$id/revokeSignInSessions" | Out-Null }
 
-    if ((Get-ConfigValue $Config 'Offboarding.RemoveGroupMemberships')) {
+    if ((Get-ConfigValue $Config 'Offboarding.RemoveGroupMemberships') -or $IncludeLicenceGroups) {
         $groups = @()
         try {
             $groups = @(Invoke-LifecycleGraphPaged -Uri "/v1.0/users/$id/memberOf/microsoft.graph.group?`$select=id,displayName,groupTypes,onPremisesSyncEnabled,assignedLicenses" |
@@ -755,7 +762,8 @@ function Invoke-LifecycleOffboarding {
         catch { $log.Add("FAILED: Read group memberships - $($_.Exception.Message)") }
         foreach ($g in $groups) {
             # Keep licence groups (mailbox must be converted first), dynamic groups and synced groups.
-            if (@($g.assignedLicenses).Count -or @($g.groupTypes) -contains 'DynamicMembership' -or $g.onPremisesSyncEnabled) { continue }
+            if (@($g.groupTypes) -contains 'DynamicMembership' -or $g.onPremisesSyncEnabled) { continue }
+            if (@($g.assignedLicenses).Count -and -not $IncludeLicenceGroups) { continue }
             if (@((Get-ConfigValue $Config 'Offboarding.KeepGroupIds')) -contains $g.id) { continue }
             & $step "Remove from group '$($g.displayName)'" { Invoke-LifecycleGraph -Method DELETE -Uri "/v1.0/groups/$($g.id)/members/$id/`$ref" | Out-Null }
         }

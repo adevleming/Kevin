@@ -26,8 +26,19 @@ $script:Status = @{
     Review          = 'Needs IT review'
     Rejected        = 'Rejected'
     Cancelled       = 'Cancelled'
+    Reversed        = 'Reversed - did not start'
 }
 $script:RequestTypes = @('New hire', 'Termination', 'Change')
+# "Did they start?" on a new hire. A no-show makes the automation undo what it set up.
+$script:HireOutcome = @{
+    Pending = 'Pending start'
+    Started = 'Started'
+    NoShow  = 'No-show / not starting'
+}
+# Fields the automation acts on. After approval, only trusted editors (the flow, HR) may change them.
+$script:CriticalFields = @('RequestType', 'AccessType', 'FirstName', 'PreferredName', 'LastName', 'EmployeeLookupId', 'EmployeeEmail',
+    'Site', 'Department', 'JobTitle', 'ManagerLookupId', 'ManagerEmail', 'StartDate', 'LastDay', 'EffectiveDate', 'TerminationType',
+    'DisableImmediately', 'MailboxDelegateLookupId', 'MailboxDelegateEmail', 'PersonalEmail', 'PaycomEmployeeId')
 
 #region Helpers
 
@@ -130,9 +141,25 @@ function Connect-LifecycleExchange {
     }
 }
 
+function Find-LifecycleMailContact {
+    <#
+        Exact lookup of a mail contact by its external address. Never calls Get-MailContact
+        with an empty identity (that returns every contact). Returns the single match, $null
+        if there is none, and throws if the address matches more than one contact.
+    #>
+    param([string]$ExternalEmail)
+    if (-not $ExternalEmail -or -not $ExternalEmail.Trim()) { throw 'No email address to look up.' }
+    $escaped = $ExternalEmail.Trim() -replace "'", "''"
+    $found = @(Invoke-LifecycleExchange 'Get-MailContact' @{ Filter = "ExternalEmailAddress -eq '$escaped'"; ResultSize = 2 })
+    $found = @($found | Where-Object { $_ })
+    if ($found.Count -gt 1) { throw "More than one contact has the address $ExternalEmail." }
+    if ($found.Count -eq 1) { return $found[0] }
+    return $null
+}
+
 function Test-RequestNeedsExchange {
     param([string]$Action, [hashtable]$Config)
-    if (@('CreateContact', 'RemoveContact') -contains $Action) { return $true }
+    if (@('CreateContact', 'RemoveContact', 'ReverseHire') -contains $Action) { return $true }
     return ($Action -eq 'Offboard' -and [bool](Get-ConfigValue $Config 'Offboarding.ConvertMailboxToShared'))
 }
 
@@ -156,15 +183,25 @@ function Get-LifecycleRequestListColumns {
     $date = { param($name, $display) @{ name = $name; displayName = $display; dateTime = @{ format = 'dateOnly'; displayAs = 'default' } } }
     $person = { param($name, $display) @{ name = $name; displayName = $display; personOrGroup = @{ allowMultipleSelection = $false; chooseFromType = 'peopleOnly' } } }
 
+    $yesNo = @('Yes', 'No')
     $status = & $choice 'Status' 'Status' @($script:Status.Submitted, $script:Status.PendingApproval, $script:Status.Ready, $script:Status.Scheduled,
-        $script:Status.InProgress, $script:Status.Completed, $script:Status.Review, $script:Status.Rejected, $script:Status.Cancelled)
+        $script:Status.InProgress, $script:Status.Completed, $script:Status.Review, $script:Status.Rejected, $script:Status.Cancelled,
+        $script:Status.Reversed)
     $status.indexed = $true
     $status.defaultValue = @{ value = $script:Status.Submitted }
 
     $requestType = & $choice 'RequestType' 'Request type' $script:RequestTypes
     $requestType.required = $true
 
+    $outcome = & $choice 'HireOutcome' 'Did they start?' @($script:HireOutcome.Pending, $script:HireOutcome.Started, $script:HireOutcome.NoShow)
+    $outcome.indexed = $true
+    $outcome.defaultValue = @{ value = $script:HireOutcome.Pending }
+
+    $dateTime = { param($name, $display) @{ name = $name; displayName = $display; dateTime = @{ format = 'dateTime'; displayAs = 'default' } } }
+    $cfgList = { param($path) @((Get-ConfigValue $Config $path) | Where-Object { $_ }) }
+
     @(
+        # ---- Every request (requester) ----
         $requestType
         $status
         & $choice 'AccessType' 'Computer access' @((Get-ConfigValue $Config 'AccessTypes') | ForEach-Object { $_.Name })
@@ -172,26 +209,91 @@ function Get-LifecycleRequestListColumns {
         & $text 'PreferredName' 'Preferred first name'
         & $text 'LastName' 'Last name'
         & $person 'Employee' 'Employee'
-        & $choice 'Site' 'Site' @((Get-ConfigValue $Config 'Sites') | ForEach-Object { $_.Name }) $true
+        & $choice 'Site' 'Location' @((Get-ConfigValue $Config 'Sites') | ForEach-Object { $_.Name }) $true
         & $choice 'Department' 'Department' @(Get-ConfigValue $Config 'Departments') $true
         & $text 'JobTitle' 'Job title'
         & $person 'Manager' 'Manager'
-        & $date 'StartDate' 'Start date'
-        & $date 'LastDay' 'Last day worked'
-        & $choice 'TerminationType' 'Termination type' @('Voluntary', 'Involuntary')
-        @{ name = 'DisableImmediately'; displayName = 'Disable access immediately'; boolean = @{} }
-        & $person 'MailboxDelegate' 'Give mailbox and files to'
-        & $date 'EffectiveDate' 'Change effective date'
+        & $multi 'Notes' 'Notes for HR / IT'
+
+        # ---- New hire (requester) ----
+        & $date 'StartDate' 'Start date (orientation day)'
+        & $choice 'Equipment' 'Equipment needed' (& $cfgList 'Requests.EquipmentChoices') $false 'checkBoxes'
         & $text 'PersonalEmail' 'Personal email'
         & $text 'MobilePhone' 'Mobile phone'
-        & $choice 'Equipment' 'Equipment needed' @((Get-ConfigValue $Config 'Requests.EquipmentChoices')) $false 'checkBoxes'
-        & $multi 'Notes' 'Notes for HR / IT'
+        & $person 'Buddy' 'Buddy / ambassador'
+        $outcome
+
+        # ---- New hire (HR: New Employee Checklist) ----
+        & $text 'ApplicantSource' 'Applicant source'
+        & $text 'JobAdId' 'Job ad ID'
+        & $choice 'HrNewHireChecklist' 'New Employee Checklist (HR)' (& $cfgList 'Requests.HrNewHireChecklist') $false 'checkBoxes'
+
+        # ---- Termination (requester / General Manager: Separation Checklist) ----
+        & $date 'TerminationDate' 'Termination date'
+        & $date 'LastDay' 'Last day worked'
+        & $choice 'TerminationType' 'Termination type' @('Voluntary', 'Involuntary')
+        & $choice 'RehireEligible' 'Rehire eligible' $yesNo
+        & $multi 'SeparationReason' 'Reason for separation'
+        & $choice 'ProperNotice' 'Proper notice given' $yesNo
+        & $choice 'ExitInterview' 'Exit interview' @('Accepts', 'Declines')
+        & $choice 'OutgoingMedical' 'Outgoing medical testing' @('Accepts', 'Declines')
+        & $text 'OutstandingEquipment' 'Outstanding equipment purchases'
+        & $choice 'AmexAdvances' 'Outstanding advances / AMEX card collected' @('Yes (Notify Finance)', 'N/A')
+        @{ name = 'DisableImmediately'; displayName = 'Disable access immediately'; boolean = @{} }
+        & $person 'MailboxDelegate' 'Give mailbox and files to'
+        # Collected on the last day (the General Manager, site admin or HR ticks these afterwards)
+        & $choice 'BadgeCollected' 'ID badge collected' $yesNo
+        & $choice 'RepairmanCertificate' 'Repairman certificate collected' @('Yes', 'No', 'N/A')
+        & $choice 'ItemsReturned' 'Equipment / PPE returned' (& $cfgList 'Requests.ReturnItems') $false 'checkBoxes'
+
+        # ---- Termination (HR / Payroll: Separation Checklist) ----
+        & $date 'FinalPaycheckDate' 'Final paycheck date'
+        & $choice 'PtoDue' 'PTO due' @('Yes', 'No', 'N/A')
+        & $choice 'ExitInterviewDone' 'Exit interview completed' $yesNo
+        & $choice 'BenefitsStatus' 'Benefits ending' (& $cfgList 'Requests.BenefitsChoices') $false 'checkBoxes'
+        & $date 'BenefitsEndDate' 'Benefits date of termination'
+        & $choice 'HrExitChecklist' 'HR exit checklist' (& $cfgList 'Requests.HrExitChecklist') $false 'checkBoxes'
+        & $choice 'PayrollExitChecklist' 'Payroll exit checklist' (& $cfgList 'Requests.PayrollExitChecklist') $false 'checkBoxes'
+
+        # ---- Change ----
+        & $date 'EffectiveDate' 'Change effective date'
+
+        # ---- HR / automation (hidden from the requester's form) ----
         & $text 'PaycomEmployeeId' 'Paycom employee code'
         & $text 'ApprovedBy' 'Approved by'
         & $text 'ITUpn' 'Account created'
         & $multi 'ITLog' 'IT automation log'
-        @{ name = 'ProcessedAt'; displayName = 'Processed at'; dateTime = @{ format = 'dateTime'; displayAs = 'default' } }
+        & $dateTime 'ProcessedAt' 'Processed at'
+        & $dateTime 'NotifiedAt' 'Employee status email sent'
+        & $dateTime 'StartCheckSentAt' 'Start-day check sent'
     )
+}
+
+function New-LifecycleRequestList {
+    <#
+        Creates the request list on a site, makes sure Status is indexed, and makes the unused
+        built-in Title column optional. Returns the created list (id, webUrl).
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$SiteId, [string]$DisplayName = 'Employee Lifecycle Requests')
+    $body = @{ displayName = $DisplayName; list = @{ template = 'genericList' }; columns = @(Get-LifecycleRequestListColumns -Config $Config) }
+    $list = Invoke-LifecycleGraph -Method POST -Uri "/v1.0/sites/$SiteId/lists" -Body $body
+    $listId = Get-FieldValue $list 'id'
+    $colUri = "/v1.0/sites/$SiteId/lists/$listId/columns"
+    $cols = @(Get-FieldValue (Invoke-LifecycleGraph -Method GET -Uri "$colUri`?`$select=id,name,indexed,required") 'value')
+    $byName = @{}
+    foreach ($c in $cols) { $byName[[string](Get-FieldValue $c 'name')] = $c }
+    $warnings = New-Object Collections.Generic.List[string]
+    foreach ($indexed in 'Status', 'HireOutcome') {
+        if ($byName.ContainsKey($indexed) -and -not (Get-FieldValue $byName[$indexed] 'indexed')) {
+            try { Invoke-LifecycleGraph -Method PATCH -Uri "$colUri/$(Get-FieldValue $byName[$indexed] 'id')" -Body @{ indexed = $true } | Out-Null }
+            catch { $warnings.Add("Couldn't index $indexed ($($_.Exception.Message)). Do it in List settings > Indexed columns.") }
+        }
+    }
+    if ($byName.ContainsKey('Title')) {
+        try { Invoke-LifecycleGraph -Method PATCH -Uri "$colUri/$(Get-FieldValue $byName['Title'] 'id')" -Body @{ required = $false } | Out-Null }
+        catch { $warnings.Add("Couldn't make Title optional ($($_.Exception.Message)). Do it in List settings > Title > Require = No.") }
+    }
+    [pscustomobject]@{ Id = $listId; WebUrl = Get-FieldValue $list 'webUrl'; Warnings = $warnings.ToArray() }
 }
 
 function Resolve-LifecyclePersonEmail {
@@ -270,19 +372,32 @@ function ConvertFrom-LifecycleListItem {
         ApprovedBy           = & $get 'ApprovedBy'
         ITLog                = & $get 'ITLog'
         ITUpn                = & $get 'ITUpn'
+        HireOutcome          = $(if (& $get 'HireOutcome') { & $get 'HireOutcome' } else { $script:HireOutcome.Pending })
+        TerminationDate      = ConvertFrom-ListDate (& $get 'TerminationDate') $tzId
+        RehireEligible       = & $get 'RehireEligible'
+        BuddyEmail           = & $person 'Buddy'
+        NotifiedAt           = & $get 'NotifiedAt'
+        StartCheckSentAt     = & $get 'StartCheckSentAt'
+        Versions             = @(Get-FieldValue $Item 'versions')
         RequesterEmail       = $requester
+        RequesterId          = Get-FieldValue (Get-FieldValue (Get-FieldValue $Item 'createdBy') 'user') 'id'
+        CreatedAt            = $(if (Get-FieldValue $Item 'createdDateTime') { [DateTimeOffset]::Parse([string](Get-FieldValue $Item 'createdDateTime'), [Globalization.CultureInfo]::InvariantCulture).UtcDateTime } else { $null })
         LastModifiedByEmail  = Get-FieldValue $modifiedBy 'email'
     }
 }
 
 function Get-LifecycleRequestItems {
-    <# Raw list items, optionally only those in the given statuses (one query per status). #>
-    param([Parameter(Mandatory)][hashtable]$Config, [string[]]$Status)
+    <#
+        Raw list items, optionally only those where an (indexed) field has one of the given
+        values: one query per value, since list filters take a single indexed field.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config, [string[]]$Status, [string]$Field = 'Status', [string[]]$Values)
     $base = "/v1.0/sites/$($Config.Requests.SiteId)/lists/$($Config.Requests.ListId)/items?expand=fields&`$top=200"
-    if (-not $Status) { return @(Invoke-LifecycleGraphPaged -Uri $base) }
+    if ($Status) { $Values = $Status; $Field = 'Status' }
+    if (-not $Values) { return @(Invoke-LifecycleGraphPaged -Uri $base) }
     $headers = @{ Prefer = 'HonorNonIndexedQueriesWarningMayFailRandomly' }
-    foreach ($s in $Status) {
-        $filter = [uri]::EscapeDataString("fields/Status eq '$s'")
+    foreach ($v in $Values) {
+        $filter = [uri]::EscapeDataString("fields/$Field eq '$($v -replace "'", "''")'")
         Invoke-LifecycleGraphPaged -Uri "$base&`$filter=$filter" -Headers $headers
     }
 }
@@ -313,24 +428,81 @@ function Test-LifecycleRequestAllowed {
     #>
     param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)][hashtable]$Config, [scriptblock]$IsMemberOf)
     $r = $Config.Requests
-    if (@((Get-ConfigValue $r 'AuthorizedGroupIds')).Count -and $IsMemberOf) {
-        if (-not $Request.RequesterEmail) { return [pscustomobject]@{ Allowed = $false; Reason = 'Requester unknown.' } }
-        if (-not (& $IsMemberOf $Request.RequesterEmail @((Get-ConfigValue $r 'AuthorizedGroupIds')))) {
+    $groups = @((Get-ConfigValue $r 'AuthorizedGroupIds') | Where-Object { $_ })
+    # Checked when a request is first accepted; a scheduled termination still runs if the
+    # requester has since left the team.
+    if ($Request.Status -eq $script:Status.Ready) {
+        if (-not $groups.Count) { return [pscustomobject]@{ Allowed = $false; Reason = 'Requests.AuthorizedGroupIds isn''t set, so the requester can''t be checked.' } }
+        if (-not $IsMemberOf) { return [pscustomobject]@{ Allowed = $false; Reason = 'No way to check the requester''s group membership.' } }
+        $who = if ($Request.RequesterId) { $Request.RequesterId } else { $Request.RequesterEmail }
+        if (-not $who) { return [pscustomobject]@{ Allowed = $false; Reason = 'Requester unknown.' } }
+        if (-not (& $IsMemberOf $who $groups)) {
             return [pscustomobject]@{ Allowed = $false; Reason = "Requester $($Request.RequesterEmail) is not in an authorised hiring group." }
         }
-    }
-    # Requests are locked read-only for the requester once submitted. If someone outside the
-    # trusted editors (HR approvers, the flow's account) changed it last, a person should look.
-    # Edits made by this automation (app-only) carry no email and are fine.
-    $trusted = @(Get-ConfigValue $r 'TrustedEditors' | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
-    if ($trusted.Count -and $Request.LastModifiedByEmail -and ($trusted -notcontains $Request.LastModifiedByEmail.ToLowerInvariant())) {
-        return [pscustomobject]@{ Allowed = $false; Reason = "Last edited by $($Request.LastModifiedByEmail), who isn't a trusted editor. Check what changed (version history) before running it." }
     }
     $immediateTerm = $Request.RequestType -eq 'Termination' -and ($Request.DisableImmediately -or $Request.TerminationType -eq 'Involuntary')
     if ((Get-ConfigValue $r 'RequireApproval') -and -not $immediateTerm -and -not $Request.ApprovedBy) {
         return [pscustomobject]@{ Allowed = $false; Reason = 'Marked Ready for IT without a recorded approval.' }
     }
     return [pscustomobject]@{ Allowed = $true; Reason = '' }
+}
+
+function Get-LifecycleRequestVersions {
+    <# The item's version history (oldest first), with field values for each version. #>
+    param([Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$ItemId)
+    @(Invoke-LifecycleGraphPaged -Uri "/v1.0/sites/$($Config.Requests.SiteId)/lists/$($Config.Requests.ListId)/items/$ItemId/versions?`$expand=fields")
+}
+
+function Test-LifecycleRequestProvenance {
+    <#
+        Checks the item's version history, which ordinary users can't alter:
+          1. the change to 'Ready for IT' was made by a trusted editor (the flow's account or HR);
+          2. nobody else changed a field the automation acts on after that.
+        Requesters can still edit their own request afterwards (no-show, badge collected, etc.);
+        only the fields in CriticalFields are protected. Edits by this automation carry no
+        user email and never touch those fields.
+    #>
+    param([object[]]$Versions, [Parameter(Mandatory)][hashtable]$Config)
+    $result = { param([bool]$ok, [string]$why) [pscustomobject]@{ Allowed = $ok; Reason = $why } }
+    $trusted = @(Get-ConfigValue $Config 'Requests.TrustedEditors' | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    if (-not $trusted.Count) { return & $result $false 'Requests.TrustedEditors is empty, so approvals can''t be verified.' }
+    $versions = @($Versions | Where-Object { $_ })
+    if (-not $versions.Count) { return & $result $false 'Couldn''t read the request''s version history, so its approval can''t be verified.' }
+    if (@($versions | Where-Object { $null -eq (Get-FieldValue $_ 'fields') }).Count) { return & $result $false 'The version history came back without field values, so the approval can''t be verified.' }
+
+    $when = {
+        param($v)
+        $t = Get-FieldValue $v 'lastModifiedDateTime'
+        if ($t -is [datetime]) { return $t.ToUniversalTime() }
+        if ($t) { return [DateTimeOffset]::Parse([string]$t, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+        return [datetime]::MinValue
+    }
+    $versions = @($versions | Sort-Object { & $when $_ }, { [double]((Get-FieldValue $_ 'id') -replace '[^\d.]', '') })
+    $field = { param($v, $n) $x = Get-FieldValue (Get-FieldValue $v 'fields') $n; if ($null -eq $x) { '' } elseif ($x -is [datetime]) { $x.ToUniversalTime().ToString('o') } else { [string]$x } }
+    $editor = { param($v) ([string](Get-FieldValue (Get-FieldValue (Get-FieldValue $v 'lastModifiedBy') 'user') 'email')).ToLowerInvariant() }
+
+    $approval = -1
+    for ($i = 0; $i -lt $versions.Count; $i++) {
+        $isReady = (& $field $versions[$i] 'Status') -eq $script:Status.Ready
+        $wasReady = $i -gt 0 -and (& $field $versions[$i - 1] 'Status') -eq $script:Status.Ready
+        if ($isReady -and -not $wasReady) { $approval = $i }
+    }
+    if ($approval -lt 0) { return & $result $false 'No change to Ready for IT found in the version history.' }
+    $approver = & $editor $versions[$approval]
+    if ($approval -eq 0) { return & $result $false "The request was created already marked Ready for IT (by $approver), skipping approval." }
+    if ($trusted -notcontains $approver) {
+        $who = if ($approver) { $approver } else { 'an app' }
+        return & $result $false "It was set to Ready for IT by $who, who isn't a trusted approver."
+    }
+    for ($i = $approval + 1; $i -lt $versions.Count; $i++) {
+        $changed = @($script:CriticalFields | Where-Object { (& $field $versions[$i - 1] $_) -ne (& $field $versions[$i] $_) })
+        $by = & $editor $versions[$i]
+        if ($changed.Count -and ($trusted -notcontains $by)) {
+            $who = if ($by) { $by } else { 'an app or account with no email' }
+            return & $result $false "Changed after approval by $who ($($changed -join ', ')). HR needs to re-approve."
+        }
+    }
+    return & $result $true ''
 }
 
 function Get-LifecycleRequestAction {
@@ -347,6 +519,10 @@ function Get-LifecycleRequestAction {
 
     switch ($Request.RequestType) {
         'New hire' {
+            if ($Request.HireOutcome -eq $script:HireOutcome.NoShow) {
+                if ($Request.Status -eq $script:Status.Completed) { return & $result 'ReverseHire' 'Marked as a no-show: undo what was set up.' $null }
+                return & $result 'CancelHire' 'Marked as a no-show before anything was set up.' $null
+            }
             if (-not $Request.FirstName -or -not $Request.LastName) { return & $result 'Review' 'First and last name are required.' $null }
             if (-not $access) { return & $result 'Review' "Unknown computer access type '$($Request.AccessType)'." $null }
             if ($isContact) { return & $result 'CreateContact' 'Contact only - no account.' $null }
@@ -400,9 +576,46 @@ function Invoke-LifecycleRequestAction {
         if ($email -and $Index.ByEmail.ContainsKey($email.ToLowerInvariant())) { return $Index.ByEmail[$email.ToLowerInvariant()] }
         return $null
     }
+    $successStatus = switch ($Action) { 'ReverseHire' { $script:Status.Reversed } 'CancelHire' { $script:Status.Cancelled } default { $script:Status.Completed } }
+    # Accounts the automation must not touch: protected, or outside the domains Paycom covers
+    # (e.g. Eirtech etas.ie users, guests).
+    $outOfBounds = {
+        param($u)
+        $upnL = ([string]$u.userPrincipalName).ToLowerInvariant()
+        if (@((Get-ConfigValue $Config 'Offboarding.ProtectedUpns') | ForEach-Object { ([string]$_).ToLowerInvariant() }) -contains $upnL) {
+            return "$($u.userPrincipalName) is on the protected list; handle it by hand."
+        }
+        $domains = @((Get-ConfigValue $Config 'Scope.Domains') | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+        if ($domains.Count -and ($domains -notcontains (($upnL -split '@')[-1]))) { return "$($u.userPrincipalName) isn't in a domain this automation manages." }
+        if ((Get-FieldValue $u 'userType') -and (Get-FieldValue $u 'userType') -ne 'Member') { return "$($u.userPrincipalName) is a guest account." }
+        return $null
+    }
     $finish = {
-        $status = if (@($log | Where-Object { $_ -match '^(FAILED|REVIEW)' }).Count) { $script:Status.Review } else { $script:Status.Completed }
+        $status = if (@($log | Where-Object { $_ -match '^(FAILED|REVIEW)' }).Count) { $script:Status.Review } else { $successStatus }
         [pscustomobject]@{ Status = $status; Upn = $upn; Log = $log.ToArray() }
+    }
+    $removeContact = {
+        param([bool]$MissingIsFine)
+        # Only ever by exact external address: a name could match the wrong person.
+        $id = $Request.PersonalEmail
+        if (-not $id) { $log.Add('REVIEW: No personal email on the request, so the contact can''t be identified safely. Remove it by hand.'); return }
+        try { $existing = Find-LifecycleMailContact $id }
+        catch { $log.Add("REVIEW: $($_.Exception.Message)"); return }
+        if (-not $existing) {
+            if ($MissingIsFine) { $log.Add("OK: No contact found for $id; nothing to remove.") }
+            else { $log.Add("REVIEW: No contact found for $id. Check the address; the person may still be in the address book.") }
+            return
+        }
+        # Only contacts this automation created (tagged on creation), unless configured otherwise.
+        $tag = [string](Get-FieldValue $existing 'CustomAttribute2')
+        if ($tag -notmatch '^Lifecycle request' -and -not (Get-ConfigValue $Config 'Exchange.RemoveUntaggedContacts')) {
+            $log.Add("REVIEW: The contact for $id wasn't created by this automation; remove it by hand if that's right.")
+            return
+        }
+        $guid = [string](Get-FieldValue $existing 'Guid')
+        if (-not $guid) { $log.Add("REVIEW: Contact for $id has no GUID; remove it by hand."); return }
+        try { Invoke-LifecycleExchange 'Remove-MailContact' @{ Identity = $guid; Confirm = $false } | Out-Null; $log.Add("OK: Removed contact $id") }
+        catch { $log.Add("FAILED: Remove contact $id - $($_.Exception.Message)") }
     }
 
     switch ($Action) {
@@ -437,6 +650,12 @@ function Invoke-LifecycleRequestAction {
             try {
                 foreach ($line in (Invoke-LifecycleOnboarding -Employee $employee -Upn $upn -Config $Config -ManagerUser $manager -ExtraGroupIds $groups)) { $log.Add($line) }
                 $ExistingUpns.Add($upn)
+                # So a duplicate request later in the same run sees this account.
+                $made = [pscustomobject]@{ id = $null; userPrincipalName = $upn; mail = $upn; employeeId = $Request.PaycomEmployeeId; accountEnabled = $true; displayName = $Request.DisplayName }
+                $Index.ByEmail[$upn.ToLowerInvariant()] = $made
+                if ($Request.PaycomEmployeeId) { $Index.ByEmployeeId[$Request.PaycomEmployeeId] = $made }
+                if (-not $Index.ByName.ContainsKey($nameKey)) { $Index.ByName[$nameKey] = New-Object Collections.Generic.List[object] }
+                $Index.ByName[$nameKey].Add($made)
             }
             catch {
                 $log.Add("FAILED: Create $upn - $($_.Exception.Message)")
@@ -451,8 +670,8 @@ function Invoke-LifecycleRequestAction {
                 return & $finish
             }
             $id = $Request.PersonalEmail
-            $existing = $null
-            try { $existing = Invoke-LifecycleExchange 'Get-MailContact' @{ Identity = $id } } catch { $existing = $null }
+            try { $existing = Find-LifecycleMailContact $id }
+            catch { $log.Add("REVIEW: $($_.Exception.Message)"); return & $finish }
             if ($existing) { $log.Add("OK: Contact for $id already exists.") }
             else {
                 try {
@@ -480,7 +699,9 @@ function Invoke-LifecycleRequestAction {
             catch { $log.Add("FAILED: Tag contact - $($_.Exception.Message)") }
             if ($site -and (Get-ConfigValue $site 'ContactGroups')) {
                 foreach ($g in @((Get-ConfigValue $site 'ContactGroups'))) {
-                    try { Invoke-LifecycleExchange 'Add-DistributionGroupMember' @{ Identity = $g; Member = $id } | Out-Null; $log.Add("OK: Added to $g") }
+                    $add = @{ Identity = $g; Member = $id }
+                    if (Get-ConfigValue $Config 'Exchange.BypassGroupOwnerCheck') { $add.BypassSecurityGroupManagerCheck = $true }
+                    try { Invoke-LifecycleExchange 'Add-DistributionGroupMember' $add | Out-Null; $log.Add("OK: Added to $g") }
                     catch { $log.Add("FAILED: Add to $g - $($_.Exception.Message)") }
                 }
             }
@@ -491,28 +712,54 @@ function Invoke-LifecycleRequestAction {
             if (-not $Request.EmployeeEmail) { $log.Add('REVIEW: No employee selected on the request.'); return & $finish }
             $user = & $findUser $Request.EmployeeEmail
             if (-not $user) { $log.Add("REVIEW: No Entra account found for $($Request.EmployeeEmail)."); return & $finish }
-            $upnLower = ([string]$user.userPrincipalName).ToLowerInvariant()
-            if (@((Get-ConfigValue $Config 'Offboarding.ProtectedUpns') | ForEach-Object { ([string]$_).ToLowerInvariant() }) -contains $upnLower) {
-                $log.Add("REVIEW: $($user.userPrincipalName) is on the protected list; offboard it by hand.")
+            $why = & $outOfBounds $user
+            if ($why) { $log.Add("REVIEW: $why"); return & $finish }
+
+            # An immediate termination skips HR approval, so the requester must be the employee's
+            # manager in Entra, or HR/IT. Otherwise HR approves it first.
+            $immediate = $Request.DisableImmediately -or $Request.TerminationType -eq 'Involuntary'
+            $humanApproved = $Request.ApprovedBy -and $Request.ApprovedBy -notmatch '^Immediate'
+            $manager = $null
+            try { $manager = Invoke-LifecycleGraph -Method GET -Uri "/v1.0/users/$($user.id)/manager?`$select=id,mail,userPrincipalName" } catch { $manager = $null }
+            $managerAddrs = @(@((Get-FieldValue $manager 'mail'), (Get-FieldValue $manager 'userPrincipalName')) | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+            $trusted = @((Get-ConfigValue $Config 'Requests.TrustedEditors') | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+            $requester = ([string]$Request.RequesterEmail).ToLowerInvariant()
+            if ($immediate -and -not $humanApproved -and ($managerAddrs -notcontains $requester) -and ($trusted -notcontains $requester)) {
+                $log.Add("REVIEW: Immediate termination requested by $($Request.RequesterEmail), who isn't $($user.userPrincipalName)'s manager or HR. HR needs to approve it.")
                 return & $finish
             }
-            if (-not $user.accountEnabled) { $log.Add("OK: $($user.userPrincipalName) was already disabled.") }
-            else { foreach ($line in (Invoke-LifecycleOffboarding -User $user -Config $Config)) { $log.Add($line) } }
-            if ((Get-ConfigValue $Config 'Offboarding.ConvertMailboxToShared')) {
-                try {
-                    Invoke-LifecycleExchange 'Set-Mailbox' @{ Identity = $user.userPrincipalName; Type = 'Shared' } | Out-Null
-                    $log.Add('OK: Mailbox converted to shared')
+
+            $blocked = $false
+            if (-not $user.accountEnabled) { $log.Add("OK: $($user.userPrincipalName) was already disabled."); $blocked = $true }
+            else {
+                foreach ($line in (Invoke-LifecycleOffboarding -User $user -Config $Config)) { $log.Add($line) }
+                $blocked = [bool]($log | Where-Object { $_ -match '^OK: (Block sign-in|Disable on-prem AD account)' })
+            }
+            if (Get-ConfigValue $Config 'Offboarding.ConvertMailboxToShared') {
+                if (-not $blocked) {
+                    $log.Add('REVIEW: Sign-in could not be blocked, so the mailbox was left alone.')
                 }
-                catch { $log.Add("FAILED: Convert mailbox to shared - $($_.Exception.Message)") }
-                if ($Request.MailboxDelegateEmail) {
+                else {
                     try {
-                        Invoke-LifecycleExchange 'Add-MailboxPermission' @{
-                            Identity = $user.userPrincipalName; User = $Request.MailboxDelegateEmail; AccessRights = 'FullAccess'
-                            InheritanceType = 'All'; AutoMapping = $true
-                        } | Out-Null
-                        $log.Add("OK: Mailbox access given to $($Request.MailboxDelegateEmail)")
+                        Invoke-LifecycleExchange 'Set-Mailbox' @{ Identity = $user.userPrincipalName; Type = 'Shared' } | Out-Null
+                        $log.Add('OK: Mailbox converted to shared')
                     }
-                    catch { $log.Add("FAILED: Mailbox access for $($Request.MailboxDelegateEmail) - $($_.Exception.Message)") }
+                    catch { $log.Add("FAILED: Convert mailbox to shared - $($_.Exception.Message)") }
+                    $delegate = $Request.MailboxDelegateEmail
+                    if ($delegate -and $immediate -and -not $humanApproved -and ($managerAddrs -notcontains $delegate.ToLowerInvariant())) {
+                        $log.Add("NOTE: Mailbox access for $delegate wasn't granted automatically (immediate termination, and they aren't the employee's manager). HR can grant it after review.")
+                        $delegate = $null
+                    }
+                    if ($delegate) {
+                        try {
+                            Invoke-LifecycleExchange 'Add-MailboxPermission' @{
+                                Identity = $user.userPrincipalName; User = $delegate; AccessRights = 'FullAccess'
+                                InheritanceType = 'All'; AutoMapping = $true
+                            } | Out-Null
+                            $log.Add("OK: Mailbox access given to $delegate")
+                        }
+                        catch { $log.Add("FAILED: Mailbox access for $delegate - $($_.Exception.Message)") }
+                    }
                 }
             }
             $upn = $user.userPrincipalName
@@ -520,19 +767,51 @@ function Invoke-LifecycleRequestAction {
         }
 
         'RemoveContact' {
-            $id = if ($Request.PersonalEmail) { $Request.PersonalEmail } else { $Request.DisplayName }
-            if (-not $id) { $log.Add('REVIEW: No contact name or email on the request.'); return & $finish }
-            $existing = $null
-            try { $existing = Invoke-LifecycleExchange 'Get-MailContact' @{ Identity = $id } } catch { $existing = $null }
-            if (-not $existing) { $log.Add("OK: No contact found for $id; nothing to remove."); return & $finish }
-            try { Invoke-LifecycleExchange 'Remove-MailContact' @{ Identity = $id; Confirm = $false } | Out-Null; $log.Add("OK: Removed contact $id") }
-            catch { $log.Add("FAILED: Remove contact $id - $($_.Exception.Message)") }
+            & $removeContact $false
+            return & $finish
+        }
+
+        'CancelHire' {
+            $log.Add('OK: Marked as a no-show before anything was set up; nothing to undo.')
+            return & $finish
+        }
+
+        'ReverseHire' {
+            # Undo a hire who never started: the account (or contact) this request created.
+            $isContact = [bool](Get-ConfigValue $access 'Contact')
+            if ($isContact) { & $removeContact $true; return & $finish }
+            if (-not $Request.ITUpn) { $log.Add('OK: No account had been created for this request; nothing to undo.'); return & $finish }
+            $user = & $findUser $Request.ITUpn
+            if (-not $user) { $log.Add("OK: $($Request.ITUpn) no longer exists; nothing to undo."); return & $finish }
+            $why = & $outOfBounds $user
+            if ($why) { $log.Add("REVIEW: $why"); return & $finish }
+            # If the account has been used, they may have started after all.
+            try {
+                $activity = Get-FieldValue (Invoke-LifecycleGraph -Method GET -Uri "/v1.0/users/$($user.id)?`$select=signInActivity") 'signInActivity'
+                $lastOk = Get-FieldValue $activity 'lastSuccessfulSignInDateTime'
+                if ($lastOk) {
+                    $log.Add("REVIEW: $($user.userPrincipalName) signed in successfully on $(([datetime]$lastOk).ToString('yyyy-MM-dd HH:mm')) UTC. Check they really didn't start before removing access.")
+                    return & $finish
+                }
+            }
+            catch { $log.Add("NOTE: Couldn't check sign-in activity ($($_.Exception.Message)); continuing.") }
+            foreach ($line in (Invoke-LifecycleOffboarding -User $user -Config $Config -IncludeLicenceGroups)) { $log.Add($line) }
+            if (Get-ConfigValue $Config 'Requests.NoShow.DeleteAccount') {
+                try {
+                    Invoke-LifecycleGraph -Method DELETE -Uri "/v1.0/users/$($user.id)" | Out-Null
+                    $log.Add("OK: Deleted $($user.userPrincipalName) (restorable from Deleted users for 30 days)")
+                }
+                catch { $log.Add("FAILED: Delete account - $($_.Exception.Message)") }
+            }
+            $upn = $user.userPrincipalName
             return & $finish
         }
 
         'UpdateProfile' {
             $user = & $findUser $Request.EmployeeEmail
             if (-not $user) { $log.Add("REVIEW: No Entra account found for $($Request.EmployeeEmail)."); return & $finish }
+            $why = & $outOfBounds $user
+            if ($why) { $log.Add("REVIEW: $why"); return & $finish }
             $body = @{}
             if ($Request.Department) { $body.department = $Request.Department }
             if ($Request.JobTitle) { $body.jobTitle = $Request.JobTitle }
@@ -557,6 +836,7 @@ function Invoke-LifecycleRequestAction {
                 }
             }
             if ($Request.Site) { $log.Add('NOTE: Site changed - review site groups and shared mailboxes (see the Desk365 ticket).') }
+            $log.Add('NOTE: Licence / computer access changes are made by IT from the ticket, not automatically.')
             $upn = $user.userPrincipalName
             return & $finish
         }
@@ -570,8 +850,11 @@ function Invoke-LifecycleRequestAction {
 
 function New-LifecycleRequestNotice {
     <# The completion email to the requester, manager and IT. #>
-    param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)]$Outcome, [Parameter(Mandatory)][string]$Action, [string]$ListUrl)
-    $name = if ($Request.DisplayName) { $Request.DisplayName } elseif ($Outcome.Upn) { $Outcome.Upn } else { $Request.EmployeeEmail }
+    param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)]$Outcome, [Parameter(Mandatory)][string]$Action, [string]$ListUrl, $User)
+    # Terminations and changes act on the picked Employee; name them from the directory, not
+    # from typed name fields that may be left over from another request type.
+    $name = if ($User -and @('Offboard', 'UpdateProfile') -contains $Action) { Get-FieldValue $User 'displayName' }
+    elseif ($Request.DisplayName) { $Request.DisplayName } elseif ($Outcome.Upn) { $Outcome.Upn } else { $Request.EmployeeEmail }
     $done = $Outcome.Status -eq $script:Status.Completed
     $what = switch ($Action) {
         'CreateUser' { if ($done) { "The account <b>$(ConvertTo-LifecycleHtml $Outcome.Upn)</b> is ready. On their first day IT will give $(ConvertTo-LifecycleHtml $name) a one-time sign-in code to set up their password and MFA. No password is sent by email." } else { 'The account could not be created automatically. IT has been notified.' } }
@@ -594,8 +877,86 @@ function ConvertTo-LifecycleHtml {
     return [System.Net.WebUtility]::HtmlEncode([string]$Value)
 }
 
+function Get-LifecycleSiteCode {
+    param([string]$Site, [hashtable]$Config)
+    $entry = Get-LifecycleConfigEntry (Get-ConfigValue $Config 'Sites') $Site
+    $code = Get-ConfigValue $entry 'Code'
+    if ($code) { return $code }
+    if ($Site -match '\(([A-Z]{2,5})\)') { return $Matches[1] }
+    return $Site
+}
+
+function New-LifecycleStatusNotice {
+    <#
+        The "Employee Status Notification" email HR used to send by hand, in the same format:
+        subject "<site code> New Hire" / "Term" / "Change" / "No-show", with a table of
+        First Name | Last Name | Title | Effective Date | Location.
+    #>
+    param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)][ValidateSet('New Hire', 'Term', 'Change', 'No-show')][string]$Kind,
+        [Parameter(Mandatory)][hashtable]$Config, $User)
+    # For a picked employee, the directory is the truth: typed name fields may be left over.
+    $fromUser = [bool]$User -and @('Term', 'Change') -contains $Kind
+    $first = if ($fromUser) { Get-FieldValue $User 'givenName' } elseif ($Request.PreferredName) { $Request.PreferredName } else { '' }
+    $last = if ($fromUser) { Get-FieldValue $User 'surname' } elseif ($Request.LastName) { $Request.LastName } else { '' }
+    $title = if ($Kind -eq 'Change' -and $Request.JobTitle) { $Request.JobTitle } elseif ($fromUser) { Get-FieldValue $User 'jobTitle' } elseif ($Request.JobTitle) { $Request.JobTitle } else { '' }
+    $effective = switch ($Kind) {
+        'New Hire' { $Request.StartDate }
+        'No-show' { $Request.StartDate }
+        'Term' { if ($Request.TerminationDate) { $Request.TerminationDate } else { $Request.LastDay } }
+        'Change' { $Request.EffectiveDate }
+    }
+    $effectiveText = if ($effective) { $effective.ToString('MM/dd/yyyy') } else { '' }
+    $code = Get-LifecycleSiteCode $Request.Site $Config
+    $cell = "style='border:1px solid #999;padding:4px 10px'"
+    $row = @($first, $last, $title, $effectiveText, $Request.Site) | ForEach-Object { "<td $cell>$(ConvertTo-LifecycleHtml $_)</td>" }
+    $head = @('First Name', 'Last Name', 'Title', 'Effective Date', 'Location') | ForEach-Object { "<th $cell>$_</th>" }
+    $extra = switch ($Kind) {
+        'Term' { "<p>Last day worked: $(if ($Request.LastDay) { $Request.LastDay.ToString('MM/dd/yyyy') }). Termination type: $(ConvertTo-LifecycleHtml $Request.TerminationType).</p>" }
+        'No-show' { '<p>This person did not start. Their IT access has been removed. Please reverse the hire in Paycom.</p>' }
+        default { '' }
+    }
+    [pscustomobject]@{
+        Subject = "$code $Kind"
+        Body    = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px'><table style='border-collapse:collapse'><tr>$($head -join '')</tr><tr>$($row -join '')</tr></table>$extra<p style='color:#666'>Sent automatically from lifecycle request #$(ConvertTo-LifecycleHtml $Request.Id).</p></div>"
+    }
+}
+
+function Get-LifecycleStartCheckBatches {
+    <#
+        New hires whose start date has arrived (in their site's time zone, after the check
+        time) and who haven't been asked about yet, grouped by site: "did these people start?"
+    #>
+    param([object[]]$Requests, [Parameter(Mandatory)][datetime]$NowUtc, [Parameter(Mandatory)][hashtable]$Config)
+    if ($NowUtc.Kind -eq [DateTimeKind]::Local) { $NowUtc = $NowUtc.ToUniversalTime() }
+    $checkTime = [timespan]::Parse($(if (Get-ConfigValue $Config 'Requests.NoShow.CheckTime') { Get-ConfigValue $Config 'Requests.NoShow.CheckTime' } else { '10:00' }))
+    $due = foreach ($r in @($Requests)) {
+        if ($r.RequestType -ne 'New hire' -or $r.Status -ne $script:Status.Completed) { continue }
+        if ($r.HireOutcome -ne $script:HireOutcome.Pending -or $r.StartCheckSentAt -or -not $r.StartDate) { continue }
+        $local = [TimeZoneInfo]::ConvertTimeFromUtc($NowUtc, [TimeZoneInfo]::FindSystemTimeZoneById((Get-SiteTimeZoneId $r.Site $Config)))
+        if ($r.StartDate.Date -lt $local.Date -or ($r.StartDate.Date -eq $local.Date -and $local.TimeOfDay -ge $checkTime)) { $r }
+    }
+    @($due | Group-Object Site | Sort-Object Name | ForEach-Object { [pscustomobject]@{ Site = $_.Name; Requests = @($_.Group | Sort-Object LastName, PreferredName) } })
+}
+
+function New-LifecycleStartCheckNotice {
+    <# One email per site: who was due to start, and how to mark anyone who didn't. #>
+    param([Parameter(Mandatory)][string]$Site, [Parameter(Mandatory)][object[]]$Requests, [string]$ListUrl)
+    $cell = "style='border-bottom:1px solid #ddd;padding:4px 10px;text-align:left'"
+    $rows = foreach ($r in $Requests) {
+        $link = if ($ListUrl) { "<a href='$ListUrl/EditForm.aspx?ID=$([uri]::EscapeDataString($r.Id))'>Mark no-show</a>" } else { "Request #$(ConvertTo-LifecycleHtml $r.Id)" }
+        $start = if ($r.StartDate) { $r.StartDate.ToString('ddd MM/dd') } else { '' }
+        "<tr><td $cell>$(ConvertTo-LifecycleHtml $r.DisplayName)</td><td $cell>$(ConvertTo-LifecycleHtml $r.JobTitle)</td><td $cell>$start</td><td $cell>$(ConvertTo-LifecycleHtml $r.ITUpn)</td><td $cell>$link</td></tr>"
+    }
+    $n = @($Requests).Count
+    $who = if ($n -eq 1) { '1 person was' } else { "$n people were" }
+    [pscustomobject]@{
+        Subject = "Did everyone start? $who due to start at $Site"
+        Body    = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222'><p>$who due to start at <b>$(ConvertTo-LifecycleHtml $Site)</b>. If everyone showed up, there's nothing to do.</p><p>For anyone who <b>didn't start</b>, open their request and set <b>Did they start?</b> to <b>No-show / not starting</b>. IT's automation then removes the access that was set up and lets HR know to reverse the hire in Paycom.</p><table style='border-collapse:collapse;font-size:13px'><tr><th $cell>Name</th><th $cell>Title</th><th $cell>Start</th><th $cell>Account</th><th $cell></th></tr>$($rows -join '')</table></div>"
+    }
+}
+
 function Test-LifecycleGroupMembership {
-    # True if the user is a (transitive) member of any of the groups.
+    # True if the user (object ID, or UPN) is a transitive member of any of the groups.
     param([Parameter(Mandatory)][string]$UserEmail, [Parameter(Mandatory)][string[]]$GroupIds)
     $res = Invoke-LifecycleGraph -Method POST -Uri "/v1.0/users/$([uri]::EscapeDataString($UserEmail))/checkMemberGroups" -Body @{ groupIds = @($GroupIds) }
     return @(Get-FieldValue $res 'value').Count -gt 0
@@ -611,8 +972,13 @@ function Compare-RosterToRequests {
         filed a request for. Matching is on Paycom employee code, then the person's account
         (termination and change requests pick the account, not a typed name), then name.
     #>
-    param([Parameter(Mandatory)]$Diff, [object[]]$Requests = @(), $Index)
-    $live = @($Requests | Where-Object { @($script:Status.Rejected, $script:Status.Cancelled) -notcontains $_.Status })
+    param([Parameter(Mandatory)]$Diff, [object[]]$Requests = @(), $Index, [datetime]$NowUtc = [datetime]::UtcNow, [int]$StaleDays = 14)
+    # A request counts as coverage if it went ahead or is on its way; one stuck waiting for
+    # approval for more than two weeks doesn't.
+    $live = @($Requests | Where-Object {
+            (@($script:Status.Rejected, $script:Status.Cancelled, $script:Status.Reversed) -notcontains $_.Status) -and
+            -not (@($script:Status.Submitted, $script:Status.PendingApproval) -contains $_.Status -and $_.CreatedAt -and ($NowUtc - $_.CreatedAt).TotalDays -gt $StaleDays)
+        })
     $match = {
         param($employee, [string]$type)
         $addresses = @($employee.Email)
@@ -625,6 +991,7 @@ function Compare-RosterToRequests {
             if ($r.RequestType -ne $type) { continue }
             if ($r.PaycomEmployeeId -and $r.PaycomEmployeeId -eq $employee.EmployeeId) { return $true }
             if ($r.EmployeeEmail -and $addresses -contains $r.EmployeeEmail) { return $true }
+            if ($r.ITUpn -and $addresses -contains $r.ITUpn) { return $true }
             $rk = Get-NameKey "$($r.PreferredName)$($r.LastName)"
             $rk2 = Get-NameKey "$($r.FirstName)$($r.LastName)"
             foreach ($ek in @((Get-NameKey "$($employee.PreferredName)$($employee.LastName)"), (Get-NameKey "$($employee.FirstName)$($employee.LastName)"))) {
@@ -646,7 +1013,9 @@ function Compare-RosterToRequests {
 #endregion
 
 Export-ModuleMember -Function Get-FieldValue, ConvertTo-LifecycleBool, Get-LifecycleConfigEntry, Get-SiteTimeZoneId, Get-SiteLocalTimeUtc,
-    ConvertFrom-ListDate, Set-LifecycleExchangeInvoker, Invoke-LifecycleExchange, Connect-LifecycleExchange, Test-RequestNeedsExchange,
-    Get-LifecycleRequestListColumns, Resolve-LifecyclePersonEmail, ConvertFrom-LifecycleListItem, Get-LifecycleRequestItems,
+    ConvertFrom-ListDate, Set-LifecycleExchangeInvoker, Invoke-LifecycleExchange, Connect-LifecycleExchange, Find-LifecycleMailContact, Test-RequestNeedsExchange,
+    Get-LifecycleRequestListColumns, New-LifecycleRequestList, Resolve-LifecyclePersonEmail, ConvertFrom-LifecycleListItem, Get-LifecycleRequestItems,
     Update-LifecycleRequestItem, Add-LifecycleLogLines, Test-LifecycleRequestAllowed, Get-LifecycleRequestAction,
-    Invoke-LifecycleRequestAction, New-LifecycleRequestNotice, Test-LifecycleGroupMembership, Compare-RosterToRequests
+    Invoke-LifecycleRequestAction, New-LifecycleRequestNotice, Test-LifecycleGroupMembership, Compare-RosterToRequests,
+    Get-LifecycleRequestVersions, Test-LifecycleRequestProvenance, Get-LifecycleSiteCode, New-LifecycleStatusNotice,
+    Get-LifecycleStartCheckBatches, New-LifecycleStartCheckNotice

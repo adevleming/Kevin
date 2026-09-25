@@ -15,7 +15,14 @@ Two parts:
    - turns off access at **6pm site time on the last day**, or immediately for involuntary
      terminations; converts the mailbox to shared and gives it to whoever the requester named;
    - updates title, department, site and manager for role changes;
-   - writes the result back to the request and emails the requester, the manager and IT.
+   - writes the result back to the request and emails the requester, the manager and IT;
+   - sends the **Employee Status** email to Payroll (employeestatus@iac.aero, HR's usual "AMA
+     Term" format) and tells the site badge office about terminations;
+   - on the **start date**, asks the hiring manager and site admin "did everyone start?". Marking
+     a **no-show** removes the access that was set up and tells HR to reverse the hire in Paycom.
+
+   The form carries HR's **Separation Checklist** and **New Employee Checklist**, so it replaces
+   those forms rather than adding another one.
 2. **The weekly Paycom audit (backstop).** Paycom only marks someone terminated after their final
    payroll, and its weekly email is just a link to the Report Center. So Paycom can't drive the process,
    but it's still the payroll record. Once a week someone downloads the *IT Current Employees* report,
@@ -35,8 +42,9 @@ Paycom weekly CSV ──► Invoke-PaycomLifecycle.ps1 ────┘  (audit: 
 
 | File | What it is |
 |---|---|
-| [`docs/FORM-AND-FLOW.md`](docs/FORM-AND-FLOW.md) | Step-by-step setup for the list, form, permissions, Teams tab and approval flow |
-| `New-LifecycleRequestList.ps1` | One-time: creates the SharePoint list with every column |
+| [`docs/FORM-AND-FLOW.md`](docs/FORM-AND-FLOW.md) | Setup and how it works: list settings, form, Teams tab, approval flow, start day and no-shows |
+| `Setup-LifecycleTenant.ps1` | One-time, run by you: creates the team, site, list, app and mailbox (new objects only; `-WhatIf` first) |
+| `New-LifecycleRequestList.ps1` | Creates just the list on an existing site, if you'd rather not use the setup script |
 | `Invoke-LifecycleRequests.ps1` | Scheduled every 15 min: processes approved requests |
 | `Invoke-PaycomLifecycle.ps1` | Weekly: the Paycom audit report |
 | `LifecycleRequests.psm1`, `PaycomLifecycle.psm1` | The logic behind both |
@@ -48,16 +56,24 @@ Paycom weekly CSV ──► Invoke-PaycomLifecycle.ps1 ────┘  (audit: 
   control it, and the script checks again that the requester is in an authorised group.
 - **Nothing runs without approval,** except immediate terminations, where HR is notified in
   parallel instead of blocking.
-- **Approved requests can't be quietly changed.** The flow locks each request to read-only for its
-  requester, and the script holds any request last edited by someone other than HR or the flow.
-- **Terminations can't run away.** At most 5 per run; protected accounts are never touched
-  automatically; accounts are disabled, never deleted.
+- **Approved requests can't be quietly changed.** The script reads the list's version history,
+  which ordinary users can't edit. The change to *Ready for IT* must have come from the flow or HR,
+  and nobody else may have changed who, when or what access afterwards. Requesters can still update
+  checklist items, such as badge collected or a no-show.
+- **Terminations can't run away.** At most 5 per run and 15 per day. Protected accounts, and
+  accounts outside `iac.aero`, are never touched automatically. Accounts are disabled, never
+  deleted (unless you turn that on for no-shows).
+- **Immediate terminations are limited.** They skip approval, so they only run if the requester is
+  the employee's manager or HR/IT. The mailbox then goes only to the manager.
 - **No passwords in email.** New accounts get a random password nobody sees. On day one the tech
   issues a Temporary Access Pass, and the user sets up MFA and a password.
 - **The Paycom audit won't act on a bad export.** If the roster looks truncated or headcount drops
   sharply, nothing changes and no tickets go out.
 
 ## One-time setup
+
+`Setup-LifecycleTenant.ps1` does most of this: see [docs/FORM-AND-FLOW.md](docs/FORM-AND-FLOW.md#1-run-the-setup-script-creates-new-things-only).
+The details below are for reference or for doing it by hand.
 
 1. **Entra app registration** (e.g. `IT Lifecycle Automation`) with a certificate. Grant these
    *application* permissions (admin consent):
@@ -111,8 +127,10 @@ more often than hourly.
 ## The weekly Paycom audit
 
 Paycom's *IT Current Employees* push report (Brian Stamer set it up on 8/12) only emails a link.
-Someone with Paycom access clicks **VIEW REPORTS**, downloads the CSV, and saves it to the SharePoint
-`Paycom Roster` folder (`Input` in config). If nobody does, IT gets a reminder instead of the week
+Someone with Paycom access clicks **VIEW REPORTS**, downloads the CSV, and saves it to an IT-only
+folder (`Input.Path` in config, e.g. a share on the automation server). **Not** the Hiring &
+Staffing team site: that file lists every employee, hiring managers can read the team's files,
+and a replaced CSV could fake terminations. If nobody does, IT gets a reminder instead of the week
 being skipped silently.
 
 What to ask Brian to change on the report:
@@ -140,14 +158,29 @@ employee code onto matched accounts (`BackfillEmployeeId`), so later matches are
 - Removing licences (after the mailbox is converted), wiping devices, collecting equipment and
   removing third-party app access stay on the Desk365 ticket.
 
+## Next: painter crews and hangar scheduling
+
+The request list is designed to feed scheduling later. When a painter is marked *Started*, a
+flow can add them to a **Crew roster** list (name, location, hire date, painter level, crew or
+shift). Hangar schedules and aircraft assignments (tail number, work order, hangar, dates, crew)
+can then build on that roster, with a board or calendar per hangar. That's a separate piece of
+work; see the questions in the handover notes before building it.
+
 ## Tests
 
 ```powershell
-pwsh ./tests/Test-LifecycleRequests.ps1   # form-driven requests (mocked Graph and Exchange)
-pwsh ./tests/Test-PaycomLifecycle.ps1     # Paycom audit
+pwsh ./tests/Test-LifecycleRequests.ps1     # form-driven requests (mocked Graph and Exchange)
+pwsh ./tests/Test-SetupLifecycleTenant.ps1  # setup script against a fake Graph: creates only, never modifies
+pwsh ./tests/Test-PaycomLifecycle.ps1       # Paycom audit
 ```
 
-Offline and self-contained (no Pester, no tenant). The fixtures cover every request type and access
-level, time zones and the last-day cutoff, rehires, same-name hires, accented names, unapproved or
-tampered requests, requesters outside the hiring groups, the per-run termination cap, and truncated
-Paycom exports.
+Offline and self-contained (no Pester, no tenant). The fixtures cover:
+- every request type and access level;
+- time zones and the last-day cutoff;
+- no-shows and the start-day check;
+- the Employee Status email format;
+- rehires, same-name hires and accented names;
+- forged or edited approvals (version history);
+- requesters outside the team;
+- the per-run termination cap;
+- truncated Paycom exports.

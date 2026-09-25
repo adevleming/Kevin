@@ -1,38 +1,345 @@
 [
-  { "id": "1", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } }, "lastModifiedBy": { "user": { "email": "flows@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Ready for IT", "AccessType": "Full user", "FirstName": "Maria", "LastName": "Lopez",
-      "Site": "Amarillo (AMA)", "Department": "Operations", "JobTitle": "Production Planner", "ManagerEmail": "Gina.Gomez@iac.aero",
-      "StartDate": "2026-10-05T07:00:00Z", "Equipment": ["Laptop", "Monitor(s)"], "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "2", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Ready for IT", "AccessType": "Contact only", "FirstName": "Luis", "LastName": "Garcia",
-      "Site": "Amarillo (AMA)", "Department": "Operations", "JobTitle": "Painter", "PersonalEmail": "luis.garcia@example.com",
-      "MobilePhone": "806-555-0142", "StartDate": "2026-10-05T07:00:00Z", "PaycomEmployeeId": "E2002", "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "3", "createdBy": { "user": { "email": "Frank.Fisher@iac.aero" } },
-    "fields": { "RequestType": "Termination", "Status": "Ready for IT", "AccessType": "Full user", "EmployeeEmail": "Dan.Dorsey@iac.aero",
-      "Site": "Spokane", "TerminationType": "Voluntary", "LastDay": "2026-10-02T07:00:00Z", "MailboxDelegateEmail": "Frank.Fisher@iac.aero",
-      "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "4", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } },
-    "fields": { "RequestType": "Termination", "Status": "Ready for IT", "AccessType": "Basic user", "EmployeeEmail": "Erin.Estes@iac.aero",
-      "Site": "Spokane", "TerminationType": "Involuntary", "DisableImmediately": true, "LastDay": "2026-10-09T07:00:00Z" } },
-  { "id": "5", "createdBy": { "user": { "email": "Frank.Fisher@iac.aero" } },
-    "fields": { "RequestType": "Change", "Status": "Ready for IT", "AccessType": "Full user", "EmployeeEmail": "Carol.Chen@iac.aero",
-      "Site": "Spokane", "JobTitle": "Controller", "ManagerEmail": "Frank.Fisher@iac.aero", "EffectiveDate": "2026-10-01T07:00:00Z",
-      "PaycomEmployeeId": "E1003", "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "6", "createdBy": { "user": { "email": "Alice.Anders@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Ready for IT", "AccessType": "Full user", "FirstName": "Sam", "LastName": "Unapproved",
-      "Site": "Spokane", "StartDate": "2026-10-12T07:00:00Z" } },
-  { "id": "7", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } },
-    "fields": { "RequestType": "Termination", "Status": "Ready for IT", "AccessType": "Contact only", "FirstName": "Pete", "LastName": "Painter",
-      "PersonalEmail": "old.painter@example.com", "Site": "Amarillo (AMA)", "TerminationType": "Voluntary", "LastDay": "2026-09-30T07:00:00Z",
-      "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "8", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Completed", "AccessType": "Full user", "FirstName": "Already", "LastName": "Done", "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "9", "createdBy": { "user": { "email": "Gina.Gomez@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Ready for IT", "AccessType": "Full user", "FirstName": "Henry", "PreferredName": "Hank", "LastName": "Hill",
-      "Site": "Spokane", "Department": "Production", "PaycomEmployeeId": "E1008", "StartDate": "2026-09-21T07:00:00Z", "ApprovedBy": "Shelbae (HR)" } },
-  { "id": "10", "createdBy": { "user": { "email": "Frank.Fisher@iac.aero" } },
-    "fields": { "RequestType": "New hire", "Status": "Pending approval", "AccessType": "Full user", "FirstName": "José", "LastName": "Núñez",
-      "Site": "Spokane", "Department": "Sales", "StartDate": "2026-09-28T07:00:00Z" } },
-  { "id": "11", "createdBy": { "user": { "email": "Frank.Fisher@iac.aero" } },
-    "fields": { "RequestType": "Termination", "Status": "Rejected", "AccessType": "Full user", "EmployeeEmail": "Erin.Estes@iac.aero", "Site": "Spokane" } }
+  {
+    "id": "1",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "lastModifiedBy": {
+      "user": {
+        "email": "flows@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "FirstName": "Maria",
+      "LastName": "Lopez",
+      "Site": "Amarillo (AMA)",
+      "Department": "Operations",
+      "JobTitle": "Production Planner",
+      "ManagerEmail": "Gina.Gomez@iac.aero",
+      "StartDate": "2026-10-05T07:00:00Z",
+      "Equipment": [
+        "Laptop",
+        "Monitor(s)"
+      ],
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "2",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Ready for IT",
+      "AccessType": "Contact only",
+      "FirstName": "Luis",
+      "LastName": "Garcia",
+      "Site": "Amarillo (AMA)",
+      "Department": "Operations",
+      "JobTitle": "Painter",
+      "PersonalEmail": "luis.garcia@example.com",
+      "MobilePhone": "806-555-0142",
+      "StartDate": "2026-10-05T07:00:00Z",
+      "PaycomEmployeeId": "E2002",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "3",
+    "createdBy": {
+      "user": {
+        "email": "Frank.Fisher@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "Termination",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "EmployeeEmail": "Dan.Dorsey@iac.aero",
+      "Site": "Spokane (GEG)",
+      "TerminationType": "Voluntary",
+      "LastDay": "2026-10-02T07:00:00Z",
+      "MailboxDelegateEmail": "Frank.Fisher@iac.aero",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "4",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "Termination",
+      "Status": "Ready for IT",
+      "AccessType": "Basic user",
+      "EmployeeEmail": "Erin.Estes@iac.aero",
+      "Site": "Spokane (GEG)",
+      "TerminationType": "Involuntary",
+      "DisableImmediately": true,
+      "LastDay": "2026-10-09T07:00:00Z"
+    }
+  },
+  {
+    "id": "5",
+    "createdBy": {
+      "user": {
+        "email": "Frank.Fisher@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "Change",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "EmployeeEmail": "Carol.Chen@iac.aero",
+      "Site": "Spokane (GEG)",
+      "JobTitle": "Controller",
+      "ManagerEmail": "Frank.Fisher@iac.aero",
+      "EffectiveDate": "2026-10-01T07:00:00Z",
+      "PaycomEmployeeId": "E1003",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "6",
+    "createdBy": {
+      "user": {
+        "email": "Alice.Anders@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "FirstName": "Sam",
+      "LastName": "Unapproved",
+      "Site": "Spokane (GEG)",
+      "StartDate": "2026-10-12T07:00:00Z"
+    }
+  },
+  {
+    "id": "7",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "Termination",
+      "Status": "Ready for IT",
+      "AccessType": "Contact only",
+      "FirstName": "Pete",
+      "LastName": "Painter",
+      "PersonalEmail": "old.painter@example.com",
+      "Site": "Amarillo (AMA)",
+      "TerminationType": "Voluntary",
+      "LastDay": "2026-09-30T07:00:00Z",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "8",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Full user",
+      "FirstName": "Already",
+      "LastName": "Done",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "9",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "FirstName": "Henry",
+      "PreferredName": "Hank",
+      "LastName": "Hill",
+      "Site": "Spokane (GEG)",
+      "Department": "Production",
+      "PaycomEmployeeId": "E1008",
+      "StartDate": "2026-09-21T07:00:00Z",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "10",
+    "createdBy": {
+      "user": {
+        "email": "Frank.Fisher@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Pending approval",
+      "AccessType": "Full user",
+      "FirstName": "José",
+      "LastName": "Núñez",
+      "Site": "Spokane (GEG)",
+      "Department": "Sales",
+      "StartDate": "2026-09-28T07:00:00Z"
+    }
+  },
+  {
+    "id": "11",
+    "createdBy": {
+      "user": {
+        "email": "Frank.Fisher@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "Termination",
+      "Status": "Rejected",
+      "AccessType": "Full user",
+      "EmployeeEmail": "Erin.Estes@iac.aero",
+      "Site": "Spokane (GEG)"
+    }
+  },
+  {
+    "id": "12",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Full user",
+      "FirstName": "Nora",
+      "LastName": "Newbie",
+      "Site": "Amarillo (AMA)",
+      "JobTitle": "Painter Helper",
+      "StartDate": "2026-10-01T07:00:00Z",
+      "HireOutcome": "No-show / not starting",
+      "ITUpn": "Nora.Newbie@iac.aero",
+      "ApprovedBy": "Shelbae (HR)",
+      "NotifiedAt": "2026-09-28T16:00:00Z"
+    }
+  },
+  {
+    "id": "13",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Full user",
+      "FirstName": "Sam",
+      "LastName": "Starter",
+      "Site": "Amarillo (AMA)",
+      "JobTitle": "Painter",
+      "StartDate": "2026-10-02T07:00:00Z",
+      "HireOutcome": "Pending start",
+      "ITUpn": "Sam.Starter@iac.aero",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "14",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Full user",
+      "FirstName": "Wendy",
+      "LastName": "Waiting",
+      "Site": "Amarillo (AMA)",
+      "JobTitle": "Painter",
+      "StartDate": "2026-10-02T07:00:00Z",
+      "HireOutcome": "Pending start",
+      "ITUpn": "Wendy.Waiting@iac.aero",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "15",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Full user",
+      "FirstName": "Fred",
+      "LastName": "Future",
+      "Site": "Spokane (GEG)",
+      "JobTitle": "Mechanic",
+      "StartDate": "2026-10-05T07:00:00Z",
+      "HireOutcome": "Pending start",
+      "ITUpn": "Fred.Future@iac.aero",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "16",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Ready for IT",
+      "AccessType": "Full user",
+      "FirstName": "Carl",
+      "LastName": "Cancelled",
+      "Site": "Spokane (GEG)",
+      "StartDate": "2026-10-12T07:00:00Z",
+      "HireOutcome": "No-show / not starting",
+      "ApprovedBy": "Shelbae (HR)"
+    }
+  },
+  {
+    "id": "17",
+    "createdBy": {
+      "user": {
+        "email": "Gina.Gomez@iac.aero"
+      }
+    },
+    "fields": {
+      "RequestType": "New hire",
+      "Status": "Completed",
+      "AccessType": "Contact only",
+      "FirstName": "Gus",
+      "LastName": "Gone",
+      "Site": "Amarillo (AMA)",
+      "JobTitle": "Painter",
+      "PersonalEmail": "gone.painter@example.com",
+      "StartDate": "2026-10-01T07:00:00Z",
+      "HireOutcome": "No-show / not starting",
+      "ApprovedBy": "Shelbae (HR)",
+      "NotifiedAt": "2026-09-28T16:00:00Z"
+    }
+  }
 ]

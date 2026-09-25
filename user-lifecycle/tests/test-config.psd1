@@ -1,4 +1,4 @@
-# Test configuration used by the tests in this folder.
+# Test configuration used by the tests in this folder (derived from config.example.psd1).
 @{
     CompanyName   = 'IAC'
 
@@ -20,34 +20,105 @@
         IncludeSignInActivity = $true       # needs AuditLog.Read.All + Entra ID P1
     }
 
+    # ---- One-time tenant setup (Setup-LifecycleTenant.ps1) ---------------------------
+    Setup         = @{
+        TeamName          = 'Hiring & Staffing Requests'
+        TeamDescription   = 'Submit new hire, termination (separation) and role change requests. Owned by HR and IT.'
+        MailNickname      = 'HiringStaffingRequests'
+        # Owners see every request, manage who's on the team, and own the list. Members submit
+        # requests and see only their own. Membership of this team = "hiring ability".
+        Owners            = @(
+            'adam.devleming@iac.aero'        # IT
+            'aaron.lueker@iac.aero'          # IT
+            'shelbea.bean@iac.aero'          # Payroll / HR (approver)
+            'annamarie.gutierrez@iac.aero'   # HR
+        )
+        Members           = @(
+            'Brian.Stamer@IAC.Aero'
+            # HR and management: add their addresses here, one per line
+        )
+        AppName           = 'IT Lifecycle Automation'
+        SenderDisplayName = 'IT Automation'
+    }
+
     # ---- Form-driven requests (primary process) ------------------------------------
     Requests      = @{
         SiteId            = 'site-1'
         ListId            = 'list-1'                  # printed by New-LifecycleRequestList.ps1
-        ListUrl           = 'https://iacaero.sharepoint.com/sites/HR/Lists/Employee%20Lifecycle%20Requests'
+        ListUrl           = 'https://leascorp.sharepoint.com/sites/HiringStaffingRequests/Lists/Employee%20Lifecycle%20Requests'
         SiteTimeZone      = 'Pacific Standard Time'   # the SharePoint site's regional setting
         DefaultTimeZone   = 'Pacific Standard Time'   # for sites not listed under Sites
         TerminationCutoff = '18:00'             # access ends at this time (site local) on the last day
-        # Only members of these groups may submit (checked again by the script).
+        # Only members of these groups may submit (checked by the script; if empty, nothing runs).
+        # Setup-LifecycleTenant.ps1 prints the Hiring & Staffing Requests team's group ID for this.
         AuthorizedGroupIds = @(
-            # 'Hiring Managers' group object ID, HR group object ID
+            'g-hiring'
         )
         RequireApproval   = $true               # the flow records ApprovedBy; immediate terminations skip approval
         # Accounts allowed to edit a request after it's submitted: HR approvers and the account
         # the flow's SharePoint connection runs as. Anything else edited last goes to IT review.
         TrustedEditors    = @(
+            'shelbea.bean@iac.aero', 'annamarie.gutierrez@iac.aero'   # HR
+            'adam.devleming@iac.aero', 'aaron.lueker@iac.aero'        # IT (to re-run a request after fixing it)
             'flows@iac.aero'
         )
         MaxOffboardPerRun = 5                   # more than this in one run are held for a person to check
+        MaxOffboardPerDay = 15                  # and more than this in 24 hours
+        # Check the list's version history: the change to Ready for IT must come from a trusted
+        # editor, and no one else may change a field the automation acts on after that.
+        VerifyApprovalHistory = $false
+        # New hires who don't show up. On the start date (after CheckTime, site time) the hiring
+        # manager and the site's OrientationContacts get one email per site asking who didn't start.
+        NoShow            = @{
+            CheckTime     = '10:00'
+            DeleteAccount = $false              # $true also deletes the unused account (restorable for 30 days)
+        }
+        # HR's checklists, as tick-boxes on the request (from the New Employee and Separation Checklists).
+        HrNewHireChecklist = @(
+            'Integrity First results (California only)', 'Drug test results', 'Consumer background check results'
+            'FAA Drug Abatement Division acknowledgment', 'Self-identification forms (AAP, disability, veteran)'
+            'Copy of employment application (page 5 drug question answered NO)', 'Signed offer letter'
+            'Substance Abuse Program pre-employment acknowledgement', 'Drug & Alcohol Policy acknowledgement', 'Resume'
+            'IAC employment application', 'Consumer background & applicant disclosure', 'Relocation agreement (if applicable)'
+            'I-9, IDs & E-Verify results', 'Job description signed', 'THCNP (Texas only)', 'Physical', 'Sign-on bonus'
+            'Time edit sheet', 'Badge policy', 'Benefits enrollment in Paycom'
+        )
+        HrExitChecklist    = @('Exit interview/form', 'COBRA premiums', 'Life insurance portability/conversion paperwork'
+            'Collect resignation letter', 'Unemployment flier', 'Remove from DOT pool', 'Transfer of personnel and benefits folders'
+            'Separation documents emailed to employee', 'Badge log updated')
+        PayrollExitChecklist = @('Notification of termination for garnishments', 'Remove from Pamir is (confirm name with Payroll)')
+        BenefitsChoices    = @('Medical', 'Dental', 'Vision', 'Life', '401(k)')
+        ReturnItems        = @('Laptop', 'Phone', 'Tablet', 'Keys and locks', 'Respirator', 'Harness', 'Boots', 'Tools (e.g. sander)', 'AMEX card')
         EquipmentChoices  = @('Laptop', 'Desktop', 'Monitor(s)', 'Docking station', 'Phone', 'Tablet', 'Badge / keys')
     }
 
+    # Locations from HR's Separation Checklist (GEG FTW VCV AMA PDX PAE Irvine, Corporate Office).
+    # Name is what the form shows and what goes into Entra officeLocation (matching the existing
+    # 'Amarillo (AMA)' style). Code starts the Employee Status email subject ("AMA Term").
+    #   GroupIds            site groups a new account joins (security or Microsoft 365 groups)
+    #   ContactGroups       distribution lists a contact-only person (e.g. painter) joins
+    #   BadgeOfficeEmails   told immediately about terminations so the badge is returned (e.g. the airport badge office)
+    #   OrientationContacts site admins asked "did everyone start?" on the start date, with the hiring manager
     Sites         = @(
-        @{ Name = 'Spokane'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Spokane'
-            GroupIds = @(); ContactGroups = @() }
-        @{ Name = 'Amarillo (AMA)'; TimeZone = 'Central Standard Time'; OfficeLocation = 'Amarillo (AMA)'
-            GroupIds = @('g-ama')                       # e.g. AMA staff group, AMA shared mailbox access group
-            ContactGroups = @('ama-floor@iac.aero') }                # distribution lists contacts join, e.g. 'ama-floor@iac.aero'
+        @{ Name = 'Spokane (GEG)'; Code = 'GEG'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Spokane (GEG)'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
+        @{ Name = 'Fort Worth (FTW)'; Code = 'FTW'; TimeZone = 'Central Standard Time'; OfficeLocation = 'Fort Worth (FTW)'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @('alyssa.jacobs@iac.aero') }
+        @{ Name = 'Victorville (VCV)'; Code = 'VCV'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Victorville (VCV)'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
+        @{ Name = 'Amarillo (AMA)'; Code = 'AMA'; TimeZone = 'Central Standard Time'; OfficeLocation = 'Amarillo (AMA)'
+            GroupIds = @('g-ama')
+            ContactGroups = @('ama-floor@iac.aero')
+            BadgeOfficeEmails = @('badges@ama-airport.example')
+            OrientationContacts = @('diane.mendez@iac.aero') }
+        @{ Name = 'Portland (PDX)'; Code = 'PDX'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Portland (PDX)'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
+        @{ Name = 'Everett (PAE)'; Code = 'PAE'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Everett (PAE)'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
+        @{ Name = 'Irvine'; Code = 'Irvine'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Irvine'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
+        @{ Name = 'Corporate Office'; Code = 'Corp'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Corporate Office'
+            GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }
     )
 
     Departments   = @('Operations', 'Quality', 'QC', 'Supply Chain', 'EHS/Facilities', 'Records', 'HR', 'Finance',
@@ -67,8 +138,14 @@
         # Needed for contacts and mailbox conversion. App needs Exchange.ManageAsApp + an Exchange role.
         AppId                 = '00000000-0000-0000-0000-000000000000'
         CertificateThumbprint = ''
-        Organization          = 'iacaero.onmicrosoft.com'
+        Organization          = 'leascorp.onmicrosoft.com'   # must be the tenant's .onmicrosoft.com domain
         UseManagedIdentity    = $false
+        # Adding contacts to a distribution list you don't own needs this, plus the
+        # 'Security Group Creation and Membership' role (included in Exchange Administrator).
+        BypassGroupOwnerCheck = $false
+        # Contacts are only removed if this automation created them (it tags them). $true also
+        # removes contacts that were created by hand.
+        RemoveUntaggedContacts = $false
     }
 
     # ---- Weekly Paycom audit (backstop) ---------------------------------------------
@@ -76,8 +153,10 @@
     # CSV and saves it to the drop folder. The audit flags hires/terms nobody filed a form for.
     Input         = @{
         ReportName      = 'IT Current Employees'
-        # 'Folder'     - newest *.csv in Path (local path, UNC share, or a synced library)
+        # 'Folder'     - newest *.csv in Path (local path or UNC share)
         # 'SharePoint' - newest *.csv in Folder of the document library DriveId
+        # Keep the roster somewhere only IT (and whoever downloads it) can write: it holds everyone's
+        # details, and a replaced file could fake terminations. Not the Hiring & Staffing team site.
         Source          = 'Folder'
         Path            = './.test-drop'
         DriveId         = 'b!xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
@@ -161,6 +240,13 @@
     }
 
     BackfillEmployeeId = $true   # with -Apply, stamp Paycom employee code on matched accounts
+
+    # Replaces the emails HR sent by hand: the Employee Status Notification (new hire, term, change,
+    # no-show) in HR's format, plus the site badge office for terminations and HR for no-shows.
+    Notifications = @{
+        EmployeeStatusTo = @('employeestatus@iac.aero')
+        HrTo             = @('shelbea.bean@iac.aero')
+    }
 
     Mail          = @{
         From     = 'it-automation@iac.aero'   # mailbox the app sends as (scope Mail.Send to it)

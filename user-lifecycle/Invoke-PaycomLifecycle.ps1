@@ -138,9 +138,11 @@ if ($null -ne $requestItems) {
 $canAct = $Apply -and $safety.IsSafe
 $mode = if ($canAct) { 'Apply' } elseif ($Apply) { 'Apply requested - blocked by safety check' } else { 'Report only' }
 
+$protected = @((Get-ConfigValue $config 'Offboarding.ProtectedUpns') | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
 $offboard = foreach ($t in $diff.Terminations) {
     $m = Find-DirectoryMatch $t.Employee $recon.Index
     if (-not $m -or -not $m.User.accountEnabled) { continue }
+    if ($protected -contains ([string]$m.User.userPrincipalName).ToLowerInvariant()) { continue }
     [pscustomobject]@{ Employee = $t.Employee; User = $m.User; Status = 'Pending - disable sign-in'; Log = @() }
 }
 $offboard = @($offboard)
