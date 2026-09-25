@@ -10,6 +10,8 @@
       1. A private Microsoft 365 group + Teams team ("Hiring & Staffing Requests") with the
          owners and members from config. Its SharePoint site hosts everything below.
       2. The "Employee Lifecycle Requests" list on that site (all columns, Status indexed).
+      3. The "Lifecycle Site Settings" list (badge office and start-day contacts per site),
+         seeded from config.
       4. The "IT Lifecycle Automation" app registration with a certificate, and its service
          principal. Permissions are requested but NOT consented; you click Grant admin
          consent yourself.
@@ -174,6 +176,14 @@ else {
     Done "Created list: $($list.WebUrl)"
 }
 
+if ($manifest.settingsListId) { Done "Already created: site settings list $($manifest.settingsListId)" }
+elseif ($dryRun) { Plan "list 'Lifecycle Site Settings' (badge office and start-day contacts), one row per site in config" }
+else {
+    $settings = Invoke-WithRetry -What 'the site settings list' -Attempts 5 -Action { New-LifecycleSiteSettingsList -Config $config -SiteId $manifest.siteId }
+    $manifest.settingsListId = $settings.Id; $manifest.settingsListUrl = $settings.WebUrl; Save-Manifest
+    Done "Created list: $($settings.WebUrl)"
+}
+
 # The weekly Paycom roster is NOT kept on this site: every hiring manager can read the team's
 # files, and a replaced CSV could fake terminations. Keep it in an IT-only folder (Input.Path).
 #endregion
@@ -295,6 +305,7 @@ Write-Host 'Put these into config.psd1:' -ForegroundColor Cyan
     Requests.SiteId             = '$($manifest.siteId)'
     Requests.ListId             = '$($manifest.listId)'
     Requests.ListUrl            = '$($manifest.listUrl)'
+    Requests.SiteSettingsListId = '$($manifest.settingsListId)'
     Requests.AuthorizedGroupIds = @('$($manifest.groupId)')
 "@ | Write-Host
 Write-Host ''

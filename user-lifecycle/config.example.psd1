@@ -62,6 +62,11 @@
             'adam.devleming@iac.aero', 'aaron.lueker@iac.aero'        # IT (to re-run a request after fixing it)
             # plus the account the approval flow's SharePoint connection runs as, e.g. 'flows@iac.aero'
         )
+        # Optional "Lifecycle Site Settings" list (made by Setup-LifecycleTenant.ps1). When set, each
+        # site's badge office and start-day contacts come from it instead of Sites below, so HR can
+        # change them without IT. Only rows last saved by SettingsEditors count (TrustedEditors if empty).
+        SiteSettingsListId = ''
+        SettingsEditors   = @()
         MaxOffboardPerRun = 5                   # more than this in one run are held for a person to check
         MaxOffboardPerDay = 15                  # and more than this in 24 hours
         # Check the list's version history: the change to Ready for IT must come from a trusted
@@ -99,6 +104,7 @@
     #   ContactGroups       distribution lists a contact-only person (e.g. painter) joins
     #   BadgeOfficeEmails   told immediately about terminations so the badge is returned (e.g. the airport badge office)
     #   OrientationContacts site admins asked "did everyone start?" on the start date, with the hiring manager
+    # (BadgeOfficeEmails and OrientationContacts are overridden by the site settings list, if configured.)
     Sites         = @(
         @{ Name = 'Spokane (GEG)'; Code = 'GEG'; TimeZone = 'Pacific Standard Time'; OfficeLocation = 'Spokane (GEG)'
             GroupIds = @(); ContactGroups = @(); BadgeOfficeEmails = @(); OrientationContacts = @() }

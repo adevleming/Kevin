@@ -48,6 +48,7 @@ Paycom weekly CSV ──► Invoke-PaycomLifecycle.ps1 ────┘  (audit: 
 | `Invoke-LifecycleRequests.ps1` | Scheduled every 15 min: processes approved requests |
 | `Invoke-PaycomLifecycle.ps1` | Weekly: the Paycom audit report |
 | `LifecycleRequests.psm1`, `PaycomLifecycle.psm1` | The logic behind both |
+| Lifecycle Site Settings (SharePoint list) | Badge office and start-day email per site, editable by HR without IT ([section 8](docs/FORM-AND-FLOW.md#8-changing-badge-offices-start-day-contacts-and-whos-on-the-team)) |
 | `config.example.psd1` | Copy to `config.psd1` (git-ignored) and fill in |
 
 ## Safeguards
@@ -165,11 +166,13 @@ employee code onto matched accounts (`BackfillEmployeeId`), so later matches are
 
 ## Next: painter crews and hangar scheduling
 
-The request list is designed to feed scheduling later. When a painter is marked *Started*, a
-flow can add them to a **Crew roster** list (name, location, hire date, painter level, crew or
-shift). Hangar schedules and aircraft assignments (tail number, work order, hangar, dates, crew)
-can then build on that roster, with a board or calendar per hangar. That's a separate piece of
-work; see the questions in the handover notes before building it.
+The proposal is in [`docs/CREW-SCHEDULING.md`](docs/CREW-SCHEDULING.md):
+- a crew roster fed by the lifecycle requests;
+- aircraft and assignment lists that GMs edit in Teams;
+- a page for the hangar UniFi displays, on the internal network only;
+- a weekly email to each painter's personal address, for people without company mailboxes.
+
+It's not built yet; the open questions at the end of that document need answers first.
 
 ## Tests
 

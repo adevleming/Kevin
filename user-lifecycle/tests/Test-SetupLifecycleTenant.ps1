@@ -53,9 +53,12 @@ function Reset-Fake {
             '^/v1\.0/groups/new-group/team$' { return $null }
             '^/v1\.0/groups/new-group/members/\$ref$' { return $null }
             '^/v1\.0/groups/new-group/sites/root' { return @{ id = 'new-site'; webUrl = 'https://leascorp.sharepoint.com/sites/HiringStaffingRequests' } }
-            '^/v1\.0/sites/new-site/lists$' { return @{ id = 'new-list'; webUrl = 'https://leascorp.sharepoint.com/sites/HiringStaffingRequests/Lists/Employee Lifecycle Requests' } }
+            '^/v1\.0/sites/new-site/lists$' {
+                if ($Body.displayName -eq 'Lifecycle Site Settings') { return @{ id = 'new-settings-list'; webUrl = 'https://leascorp.sharepoint.com/sites/HiringStaffingRequests/Lists/Lifecycle Site Settings' } }
+                return @{ id = 'new-list'; webUrl = 'https://leascorp.sharepoint.com/sites/HiringStaffingRequests/Lists/Employee Lifecycle Requests' } }
             '^/v1\.0/sites/new-site/lists/new-list/columns\?' { return @{ value = @(@{ id = 'col-title'; name = 'Title'; indexed = $false }, @{ id = 'col-status'; name = 'Status'; indexed = $false }) } }
             '^/v1\.0/sites/new-site/lists/new-list/columns/col-' { return $null }
+            '^/v1\.0/sites/new-site/lists/new-settings-list/items$' { return @{ id = 'row' } }
             '^/v1\.0/sites/new-site/drive\?' { return @{ id = 'new-drive' } }
             '^/v1\.0/drives/new-drive/root/children$' { return @{ id = 'new-folder' } }
             '^/v1\.0/applications$' { return @{ id = 'new-app-object'; appId = 'new-app-id' } }
@@ -106,14 +109,14 @@ try {
     & $setupScript -ConfigPath $cfgPath 6>$null | Out-Null
     $manifest = Get-Content (Join-Path $state 'tenant-setup.json') -Raw | ConvertFrom-Json
     It 'creates the group, team, list, app, service principal and site grant (and no roster folder on the team site)' {
-        foreach ($k in 'groupId', 'siteId', 'listId', 'appId', 'spObjectId', 'sitePermissionId', 'certThumbprint') {
+        foreach ($k in 'groupId', 'siteId', 'listId', 'settingsListId', 'appId', 'spObjectId', 'sitePermissionId', 'certThumbprint') {
             Assert-True $manifest.$k "manifest missing $k"
         }
         Assert-True $manifest.teamCreated
         Assert-Equal 0 @($global:FakeGraph.Calls | Where-Object { $_.Uri -match '/drives/' }).Count 'the Paycom roster must not live where hiring managers can read it'
     }
     It 'every write targets an object this run created' {
-        $allowed = '^/v1\.0/(groups|groups/new-group/(team|members/\$ref)|sites/new-site/(lists|lists/new-list/columns/col-(title|status)|permissions)|drives/new-drive/root/children|applications|servicePrincipals)$'
+        $allowed = '^/v1\.0/(groups|groups/new-group/(team|members/\$ref)|sites/new-site/(lists|lists/new-list/columns/col-(title|status)|lists/new-settings-list/items|permissions)|drives/new-drive/root/children|applications|servicePrincipals)$'
         $bad = @(& $writes | Where-Object { $_.Uri -notmatch $allowed })
         Assert-Equal 0 $bad.Count (($bad | ForEach-Object { "$($_.Method) $($_.Uri)" }) -join '; ')
         Assert-Equal 0 @(& $writes | Where-Object { $_.Method -eq 'DELETE' }).Count 'never deletes'
@@ -130,6 +133,11 @@ try {
         $g = ($global:FakeGraph.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -eq '/v1.0/groups' }).Body
         $later = @($global:FakeGraph.Calls | Where-Object { $_.Uri -eq '/v1.0/groups/new-group/members/$ref' }).Count
         Assert-Equal 26 (@($g.'members@odata.bind').Count + $later) '4 owners + Brian + 21 more, all as members'
+    }
+    It 'seeds the site settings list with one row per site from config' {
+        $rows = @($global:FakeGraph.Calls | Where-Object { $_.Uri -eq '/v1.0/sites/new-site/lists/new-settings-list/items' })
+        Assert-Equal 8 $rows.Count
+        Assert-Equal 'diane.mendez@iac.aero' (@($rows | Where-Object { $_.Body.fields.Title -eq 'AMA' })[0].Body.fields.StartDayContacts)
     }
     It 'requests the right permissions, without Mail.Send, and grants only write on the new site' {
         $app = ($global:FakeGraph.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -eq '/v1.0/applications' }).Body

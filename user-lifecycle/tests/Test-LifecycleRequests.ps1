@@ -409,6 +409,34 @@ It 'writes a completion notice without leaking markup from names' {
     Assert-True ($n.Body -match 'Maria &lt;b&gt;Lopez&lt;/b&gt;'); Assert-True ($n.Body -match 'No password is sent by email')
 }
 
+Write-Host 'Site settings list'
+$row = {
+    param($code, $badge, $start, $by = 'shelbea.bean@iac.aero')
+    [pscustomobject]@{ id = $code; lastModifiedBy = @{ user = @{ email = $by } }; fields = [pscustomobject]@{ Title = $code; BadgeOfficeEmails = $badge; StartDayContacts = $start } }
+}
+It 'overrides badge office and start-day contacts for sites with a row, and leaves config alone' {
+    $m = Merge-LifecycleSiteSettings -Config $config -Items @((& $row 'AMA' "badge@amarillo.example`nBadge@Amarillo.example; second@amarillo.example" ''), (& $row 'FTW' '' 'new.admin@iac.aero'))
+    $ama = $m.Sites | Where-Object Code -eq 'AMA'
+    Assert-Equal 'badge@amarillo.example,second@amarillo.example' $ama.BadgeOfficeEmails 'split, lower-cased, de-duplicated'
+    Assert-Equal 0 @($ama.OrientationContacts).Count 'an empty cell removes the contact'
+    Assert-Equal 'new.admin@iac.aero' ($m.Sites | Where-Object Code -eq 'FTW').OrientationContacts
+    Assert-Equal 'g-ama' ($ama.GroupIds) 'other site settings come from config'
+    Assert-Equal 'diane.mendez@iac.aero' ((Get-LifecycleConfigEntry $config.Sites 'Amarillo (AMA)').OrientationContacts) 'config itself unchanged'
+    Assert-Equal 0 $m.Warnings.Count ($m.Warnings -join '; ')
+}
+It 'ignores rows saved by someone who is not a settings editor' {
+    $m = Merge-LifecycleSiteSettings -Config $config -Items @(& $row 'AMA' 'attacker@evil.example' '' 'frank.fisher@iac.aero')
+    Assert-Equal 'badges@ama-airport.example' ($m.Sites | Where-Object Code -eq 'AMA').BadgeOfficeEmails
+    Assert-True ($m.Warnings -match 'isn''t a settings editor')
+}
+It 'keeps start-day contacts inside the company and drops bad addresses' {
+    $m = Merge-LifecycleSiteSettings -Config $config -Items @((& $row 'AMA' 'not-an-email' 'outside@gmail.com, ok.person@iac.aero'), (& $row 'XYZ' '' ''), (& $row 'AMA' 'dup@x.example' ''))
+    $ama = $m.Sites | Where-Object Code -eq 'AMA'
+    Assert-Equal 'ok.person@iac.aero' $ama.OrientationContacts
+    Assert-Equal 0 @($ama.BadgeOfficeEmails).Count
+    foreach ($w in 'isn''t an email', 'outside iac.aero', '''xyz''', 'more than one row') { Assert-True ($m.Warnings -match $w) "warning: $w" }
+}
+
 Write-Host 'Runner (offline)'
 $state = Join-Path $PSScriptRoot '.test-state'
 Remove-Item $state -Recurse -Force -ErrorAction SilentlyContinue
@@ -464,6 +492,18 @@ try {
         Assert-True ($item3 | Where-Object { $_.Body.NotifiedAt }) 'NotifiedAt recorded'
         $already = @($mails | Where-Object { $_.Body.message.subject -eq 'AMA New Hire' -and $_.Body.message.body.content -match 'Nora' })
         Assert-Equal 0 $already.Count 'already notified requests are not re-sent'
+    }
+    It 'uses the site settings list for the badge office and start-day email' {
+        $graph.Clear(); $exo.Clear()
+        $tmp = Join-Path $state 'site-settings.json'
+        @((& $row 'AMA' 'new-badge@amarillo.example' 'new.admin@iac.aero')) | ConvertTo-Json -Depth 6 | Set-Content $tmp
+        $null = @(& $runner -ConfigPath $cfgPath -RequestsJsonPath $reqJson -DirectoryJsonPath $dirJson -SiteSettingsJsonPath $tmp -Apply -NowUtc $now -WarningAction SilentlyContinue)
+        $mails = @($graph | Where-Object { $_.Uri -match '/sendMail$' })
+        $to = { param($m) @($m.Body.message.toRecipients | ForEach-Object { $_.emailAddress.address }) }
+        $amaTerm = @($mails | Where-Object { $_.Body.message.subject -eq 'AMA Term' })[0]
+        Assert-True ((& $to $amaTerm) -contains 'new-badge@amarillo.example'); Assert-True ((& $to $amaTerm) -notcontains 'badges@ama-airport.example')
+        $check = @($mails | Where-Object { $_.Body.message.subject -match 'Did everyone start' })[0]
+        Assert-True ((& $to $check) -contains 'new.admin@iac.aero'); Assert-True ((& $to $check) -notcontains 'diane.mendez@iac.aero')
     }
     It 'claims each request before acting so an interrupted run is not repeated' {
         $claims = @($graph | Where-Object { $_.Method -eq 'PATCH' -and $_.Uri -match '/items/1/fields$' })

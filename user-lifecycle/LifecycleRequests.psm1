@@ -296,6 +296,119 @@ function New-LifecycleRequestList {
     [pscustomobject]@{ Id = $listId; WebUrl = Get-FieldValue $list 'webUrl'; Warnings = $warnings.ToArray() }
 }
 
+#region Site settings list (badge office and start-day contacts, edited without touching config)
+
+function Get-LifecycleSiteSettingsColumns {
+    # Title holds the site code (AMA, FTW...), matching Sites[].Code in config.
+    @(
+        @{ name = 'SiteName'; displayName = 'Site'; description = 'For reference; the site code in Title is what counts.'; text = @{} }
+        @{ name = 'BadgeOfficeEmails'; displayName = 'Badge office email(s)'
+            description = 'Told about every termination at this site so the badge is returned. One address per line; can be outside IAC.'
+            text = @{ allowMultipleLines = $true; textType = 'plain' } }
+        @{ name = 'StartDayContacts'; displayName = 'Start-day email to'
+            description = 'Asked "did everyone start?" on a new hire''s start date, with the hiring manager. One IAC address per line.'
+            text = @{ allowMultipleLines = $true; textType = 'plain' } }
+    )
+}
+
+function New-LifecycleSiteSettingsList {
+    <#
+        Creates the site settings list and seeds one row per site in config, with the addresses
+        config holds today. Returns the list (id, webUrl).
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$SiteId, [string]$DisplayName = 'Lifecycle Site Settings')
+    $body = @{ displayName = $DisplayName; list = @{ template = 'genericList' }; columns = @(Get-LifecycleSiteSettingsColumns) }
+    $list = Invoke-LifecycleGraph -Method POST -Uri "/v1.0/sites/$SiteId/lists" -Body $body
+    $listId = Get-FieldValue $list 'id'
+    foreach ($s in @(Get-ConfigValue $Config 'Sites')) {
+        $fields = @{
+            Title             = [string](Get-ConfigValue $s 'Code')
+            SiteName          = [string](Get-ConfigValue $s 'Name')
+            BadgeOfficeEmails = (@(Get-ConfigValue $s 'BadgeOfficeEmails') | Where-Object { $_ }) -join "`n"
+            StartDayContacts  = (@(Get-ConfigValue $s 'OrientationContacts') | Where-Object { $_ }) -join "`n"
+        }
+        Invoke-LifecycleGraph -Method POST -Uri "/v1.0/sites/$SiteId/lists/$listId/items" -Body @{ fields = $fields } | Out-Null
+    }
+    [pscustomobject]@{ Id = $listId; WebUrl = Get-FieldValue $list 'webUrl' }
+}
+
+function Get-LifecycleSiteSettingsItems {
+    param([Parameter(Mandatory)][hashtable]$Config)
+    $listId = Get-ConfigValue $Config 'Requests.SiteSettingsListId'
+    if (-not $listId) { return }
+    Invoke-LifecycleGraphPaged -Uri "/v1.0/sites/$($Config.Requests.SiteId)/lists/$listId/items?expand=fields&`$top=200"
+}
+
+function ConvertTo-LifecycleEmailList {
+    # Splits a free-text cell (lines, commas or semicolons) into addresses; anything that isn't one goes to Invalid.
+    param([string]$Text)
+    $valid = New-Object Collections.Generic.List[string]; $invalid = New-Object Collections.Generic.List[string]
+    foreach ($part in ([string]$Text -split '[\s;,]+')) {
+        $p = $part.Trim().Trim('<', '>')
+        if (-not $p) { continue }
+        if ($p -match '^[^@\s<>"]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$') { if (-not $valid.Contains($p.ToLowerInvariant())) { $valid.Add($p.ToLowerInvariant()) } }
+        else { $invalid.Add($p) }
+    }
+    [pscustomobject]@{ Valid = $valid.ToArray(); Invalid = $invalid.ToArray() }
+}
+
+function Merge-LifecycleSiteSettings {
+    <#
+        Overlays the site settings list onto config.Sites and returns the merged Sites (copies;
+        config itself is not changed) plus warnings for IT.
+          - A row counts only if a trusted editor saved it last (Requests.SettingsEditors, or
+            TrustedEditors if that isn't set). Otherwise config's values stay.
+          - Start-day contacts get new hires' names and a link to the list, so they must be in
+            Scope.Domains. Badge offices can be external (the airport).
+          - An empty cell means "nobody", so people can be removed as well as added.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config, [object[]]$Items)
+    $warnings = New-Object Collections.Generic.List[string]
+    $editors = @(Get-ConfigValue $Config 'Requests.SettingsEditors')
+    if (-not @($editors | Where-Object { $_ }).Count) { $editors = @(Get-ConfigValue $Config 'Requests.TrustedEditors') }
+    $editors = @($editors | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    $domains = @(Get-ConfigValue $Config 'Scope.Domains' | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+
+    $rows = @{}
+    foreach ($item in @($Items)) {
+        if (-not $item) { continue }
+        $f = Get-FieldValue $item 'fields'
+        $code = ([string](Get-FieldValue $f 'Title')).Trim()
+        if (-not $code) { continue }
+        $editor = [string](Get-FieldValue (Get-FieldValue (Get-FieldValue $item 'lastModifiedBy') 'user') 'email')
+        if (-not $editor -or $editors -notcontains $editor.ToLowerInvariant()) {
+            $warnings.Add("Site settings for $code were last saved by '$editor', who isn't a settings editor; using config for that site until an editor saves the row.")
+            continue
+        }
+        if ($rows.ContainsKey($code.ToLowerInvariant())) { $warnings.Add("Site settings has more than one row for $code; using the first."); continue }
+        $rows[$code.ToLowerInvariant()] = $f
+    }
+
+    $known = @{}
+    $sites = @(foreach ($s in @(Get-ConfigValue $Config 'Sites')) {
+            $copy = @{}; foreach ($k in $s.Keys) { $copy[$k] = $s[$k] }
+            $code = ([string](Get-ConfigValue $s 'Code')).ToLowerInvariant()
+            $known[$code] = $true
+            if ($code -and $rows.ContainsKey($code)) {
+                $f = $rows[$code]
+                $badge = ConvertTo-LifecycleEmailList (Get-FieldValue $f 'BadgeOfficeEmails')
+                $start = ConvertTo-LifecycleEmailList (Get-FieldValue $f 'StartDayContacts')
+                foreach ($bad in @($badge.Invalid) + @($start.Invalid)) { $warnings.Add("Site settings for $($s.Code): '$bad' isn't an email address; ignored.") }
+                $internal = @($start.Valid | Where-Object { $domains -contains ($_ -split '@')[-1] })
+                foreach ($ext in @($start.Valid | Where-Object { $internal -notcontains $_ })) {
+                    $warnings.Add("Site settings for $($s.Code): start-day contact $ext is outside $($domains -join ', '); ignored.")
+                }
+                $copy['BadgeOfficeEmails'] = @($badge.Valid)
+                $copy['OrientationContacts'] = $internal
+            }
+            $copy
+        })
+    foreach ($code in $rows.Keys) { if (-not $known.ContainsKey($code)) { $warnings.Add("Site settings has a row for '$code', which isn't a site in config; ignored.") } }
+    [pscustomobject]@{ Sites = $sites; Warnings = $warnings.ToArray() }
+}
+
+#endregion
+
 function Resolve-LifecyclePersonEmail {
     # Person columns come back from Graph as <Name>LookupId, an ID in the site's hidden
     # User Information List. Resolve it to the person's email / UPN.
@@ -1012,7 +1125,7 @@ function Compare-RosterToRequests {
 
 #endregion
 
-Export-ModuleMember -Function Get-FieldValue, ConvertTo-LifecycleBool, Get-LifecycleConfigEntry, Get-SiteTimeZoneId, Get-SiteLocalTimeUtc,
+Export-ModuleMember -Function Get-FieldValue, Get-LifecycleSiteSettingsColumns, New-LifecycleSiteSettingsList, Get-LifecycleSiteSettingsItems, ConvertTo-LifecycleEmailList, Merge-LifecycleSiteSettings, ConvertTo-LifecycleBool, Get-LifecycleConfigEntry, Get-SiteTimeZoneId, Get-SiteLocalTimeUtc,
     ConvertFrom-ListDate, Set-LifecycleExchangeInvoker, Invoke-LifecycleExchange, Connect-LifecycleExchange, Find-LifecycleMailContact, Test-RequestNeedsExchange,
     Get-LifecycleRequestListColumns, New-LifecycleRequestList, Resolve-LifecyclePersonEmail, ConvertFrom-LifecycleListItem, Get-LifecycleRequestItems,
     Update-LifecycleRequestItem, Add-LifecycleLogLines, Test-LifecycleRequestAllowed, Get-LifecycleRequestAction,

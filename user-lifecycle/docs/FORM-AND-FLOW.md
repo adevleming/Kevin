@@ -25,7 +25,7 @@ so no premium licences are needed.
 | **Separation Checklist**, HR part (final paycheck, PTO, benefits, HR and payroll exit checklists) | HR fields on the same request, filled in by HR after approval |
 | **New Employee Checklist** (applicant source, job ad ID, the 21 paperwork items) | HR fields on the New hire request |
 | Email to employeestatus@iac.aero ("AMA Term", "… New Hire", with the First/Last/Title/Effective Date/Location table) | Sent automatically, once per request, in the same format |
-| Email the airport badge office about a termination | Sent automatically for sites with `BadgeOfficeEmails` set |
+| Email the airport badge office about a termination | Sent automatically to the site's badge office, from the **Lifecycle Site Settings** list (section 8) |
 | Telling IT about a hire or a leaver | The request itself |
 | Finding out someone didn't show up for orientation | A "did everyone start?" email on the start date. Marking a no-show removes the access |
 
@@ -269,7 +269,57 @@ Setting **Did they start? = No-show / not starting** makes the next run undo the
 A no-show can be marked any time, before or after the start date. The request ends as
 **Reversed - did not start**.
 
-## 8. Test it end to end
+## 8. Changing badge offices, start-day contacts and who's on the team
+
+### Badge office and start-day email
+
+These change often, so they live in a second list on the team site, **Lifecycle Site Settings**,
+not in `config.psd1`. The setup script creates it with one row per site, pre-filled from config.
+Put its ID in `Requests.SiteSettingsListId`; the setup script prints it.
+
+| Column | What it does |
+|---|---|
+| **Title** | The site code: GEG, FTW, VCV, AMA, PDX, PAE, Irvine, Corp. Don't rename these. |
+| **Badge office email(s)** | Emailed the "AMA Term" notice for every termination at that site. One address per line. These can be outside IAC, e.g. the airport badge office. |
+| **Start-day email to** | Asked "did everyone start?" on the start date, alongside the hiring manager. One IAC address per line. |
+
+- Changes apply on the next run, within 15 minutes. Clearing a cell means nobody at that site gets
+  that email, so people can be removed as well as added.
+- **Who can change it:** the automation only uses a row if it was last saved by someone in
+  `Requests.SettingsEditors`. If that's empty, it uses `TrustedEditors` (HR and IT). If someone else
+  edits a row, the automation keeps the old addresses for that site and warns IT, so a
+  termination notice can't be redirected quietly. To let a GM maintain their own site, add them
+  to `SettingsEditors` and give them Edit on the list.
+- **Other safeguards:**
+  - start-day contacts outside `iac.aero` are ignored, because that email lists new hires'
+    names;
+  - anything that isn't an email address is ignored and reported;
+  - if the list can't be read, the addresses in `config.psd1` are used.
+- **Permissions:** **List settings > Permissions for this list > Stop inheriting permissions**. Then
+  keep **Owners** at Full Control, and set the team **Members** to **Read** so GMs can see who gets
+  what.
+
+### Who can submit requests (team members)
+
+Anyone who is a member of the **Hiring & Staffing Requests** team can submit requests. The team's
+group is `Requests.AuthorizedGroupIds`. There's nothing else to maintain.
+
+- **Add someone:** a team owner (Adam, Aaron, Shelbae or AnnaMarie) opens the team in Teams >
+  **⋯ > Manage team > Members > Add member**, e.g. a new GM or hiring manager. They see the
+  Requests tab straight away.
+- **Remove someone:** same place, then the **X** next to their name. They lose the tab and the
+  list at once. Requests they already submitted still go through approval. A termination that
+  was already approved still runs on its date.
+- **Only add IAC accounts.** Keep the team private with no guests. The automation checks the
+  requester's group membership, and HR approves every request apart from immediate terminations.
+  So owners should add only people who hire, fire or manage staff.
+- **Someone leaving IAC** drops out of the team automatically when their account is disabled.
+  Remove them anyway to keep the list tidy.
+
+If you'd rather HR and GMs didn't need to be team owners, keep ownership with IT and HR. Anyone
+else can ask an owner in the team's General channel.
+
+## 9. Test it end to end
 
 1. Submit a **New hire, Full user** for a made-up person, starting today. Approve it in Teams.
    Within 15 minutes:
@@ -285,3 +335,5 @@ A no-show can be marked any time, before or after the start date. The request en
 5. As the requester, change the Employee on an approved termination. The next run sends it to
    *Needs IT review*, naming who changed what.
 6. Have someone outside the team submit a request. It goes to *Needs IT review*.
+7. Change the AMA **Badge office email(s)** in Lifecycle Site Settings to your own address, then
+   submit a test AMA termination. The "AMA Term" email should come to you. Put the real address back.

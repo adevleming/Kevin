@@ -25,6 +25,8 @@ param(
     [string]$RequestsJsonPath,
     # Offline testing: Entra users as JSON instead of calling Graph.
     [string]$DirectoryJsonPath,
+    # Offline testing: site settings list items as JSON instead of reading SharePoint.
+    [string]$SiteSettingsJsonPath,
     [switch]$Apply,
     [switch]$NoEmail,
     [datetime]$NowUtc = [datetime]::UtcNow
@@ -51,6 +53,20 @@ catch { Write-Warning 'Another run is in progress; exiting.'; return }
 try {
     $offline = [bool]$RequestsJsonPath
     if (-not $offline -or -not $DirectoryJsonPath -or $Apply -or -not $NoEmail) { Connect-LifecycleGraph -Graph $config.Graph }
+
+    #region Site settings (badge office and start-day contacts, kept in a list HR can edit)
+    try {
+        $settingsItems = if ($SiteSettingsJsonPath) { @(Get-Content $SiteSettingsJsonPath -Raw | ConvertFrom-Json) }
+        elseif (-not $offline -and (Get-ConfigValue $config 'Requests.SiteSettingsListId')) { @(Get-LifecycleSiteSettingsItems -Config $config) }
+        else { $null }
+        if ($null -ne $settingsItems) {
+            $merged = Merge-LifecycleSiteSettings -Config $config -Items $settingsItems
+            $config.Sites = $merged.Sites
+            foreach ($w in $merged.Warnings) { Write-Warning $w }
+        }
+    }
+    catch { Write-Warning "Couldn't read the site settings list; using config.psd1 for badge offices and start-day contacts - $($_.Exception.Message)" }
+    #endregion
 
     #region Load requests and directory
     $personCache = @{}
