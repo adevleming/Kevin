@@ -106,6 +106,11 @@ The details below are for reference or for doing it by hand.
    Exchange.
 5. **Host:** install `Microsoft.Graph.Authentication` and `ExchangeOnlineManagement` on the server that
    runs the scripts (plus `ActiveDirectory` if `DirectoryMode = 'Hybrid'`).
+   - **Pin the module versions.** Recent versions of these two modules are known to clash when both
+     load in one session. The scripts always connect Graph first, which avoids it. Once a pair
+     works, pin it (`Install-Module -RequiredVersion`) and test before upgrading either.
+   - **Azure Automation:** use a PowerShell **7.4** runtime environment; 7.2 isn't supported after
+     Sept 30, 2026. Task Scheduler is still the better fit for the 15-minute schedule.
 
 > The Paycom API sandbox SID and token were emailed in plain text on 9/2. Since IAC isn't using the API,
 > ask Paycom to revoke them.
